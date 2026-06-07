@@ -1,0 +1,24 @@
+# BoT-SORT config tuned for air-to-air UAV tracking, with camera-motion compensation (GMC) and
+# native appearance ReID. Used via model.track(tracker=...). Compared with ByteTrack, BoT-SORT adds:
+#   * GMC (gmc_method: sparseOptFlow) -> compensates the chaser's own (ego) camera motion, which is
+#     the #1 cause of ID swaps in air-to-air from a moving FPV camera.
+#   * ReID (with_reid + model: auto) -> reuses the detector's own features (near-zero extra latency)
+#     to re-bind the same target through occlusion / brief disappearance.
+# Validated stack for multi-UAV (4th Anti-UAV Challenge, CVPRW 2025: YOLO + BoT-SORT-ReID).
+# Requires Ultralytics >= 8.3.114 for native with_reid + model: auto.
+tracker_type: botsort
+
+# association thresholds (same tuning rationale as bytetrack_uav.yaml: small, low-confidence targets)
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.20
+track_buffer: 60          # keep lost tracks alive long (drones vanish behind clutter and reappear)
+match_thresh: 0.75
+fuse_score: true
+
+# --- BoT-SORT specifics ---
+gmc_method: sparseOptFlow # global motion compensation for the moving ego-camera
+proximity_thresh: 0.5     # min IoU gate for valid ReID match
+appearance_thresh: 0.25   # min appearance similarity for ReID match
+with_reid: true           # appearance ReID on
+model: auto               # reuse YOLO's own features for ReID (no separate ReID net / latency)

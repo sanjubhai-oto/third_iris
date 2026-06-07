@@ -1,0 +1,54 @@
+# envs (all virtualenvs)
+.venv/
+.venv-airsim/
+.venv*
+venv/
+__pycache__/
+*.pyc
+
+# stray sample images downloaded by ultralytics
+/bus.jpg
+/zidane.jpg
+
+# weights & runs (large model/output artifacts)
+*.pt
+*.onnx
+*.engine
+runs/
+
+# ---- AirSim Unreal binary (GBs) — never commit ----
+sim/airsim/Blocks/
+sim/airsim/Blocks.zip
+*.zip
+*.pak
+*.uasset
+
+# ---- Installers / executables ----
+*.exe
+sim/qgc/*.exe
+
+# data (large; fetched via datasets/download.py or generated)
+datasets/raw/
+datasets/yolo/
+datasets/airsim_drone/images/
+datasets/airsim_drone/labels/
+checkpoints/
+
+# logs / scratch
+*.log
+scen_out.log
+scen_err.log
+webui_out.log
+webui_err.log
+vio_out.log
+vio_err.log
+
+# sim/IDE
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# but always keep curated documentation images
+!docs/images/
+!docs/images/**

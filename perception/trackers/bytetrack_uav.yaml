@@ -1,0 +1,25 @@
+# ByteTrack config tuned for air-to-air UAV tracking (tiny, fast, often-occluded targets).
+# Used by perception/detect_track.py via model.track(tracker=...). Compare with Ultralytics'
+# stock ultralytics/cfg/trackers/bytetrack.yaml.
+tracker_type: bytetrack
+
+# Detections this confident start/continue a track on the first association stage.
+# Lowered from 0.25 -> 0.15: air-to-air UAVs are small and low-confidence.
+track_high_thresh: 0.15
+
+# Second-stage threshold to recover low-score detections (motion-based). Keep low.
+track_low_thresh: 0.05
+
+# Start a NEW track only above this. Slightly above high_thresh to limit false tracks
+# from background clutter / birds.
+new_track_thresh: 0.20
+
+# Frames to keep a lost track alive before deleting. Raised 30 -> 60: drones vanish behind
+# clouds/terrain and reappear; higher buffer preserves IDs (at some risk of ID reuse).
+track_buffer: 60
+
+# IoU/cost association threshold. Small fast targets move a lot frame-to-frame; loosen a bit.
+match_thresh: 0.75
+
+# Use detection confidence to weight association cost (helps with clutter).
+fuse_score: true
