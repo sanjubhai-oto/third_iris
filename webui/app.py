@@ -469,7 +469,7 @@ def tracking_loop():
                     (vn, ve, vd), clearance_m, avoiding = apply_avoidance(
                         [vn, ve, vd], depth, yaw_nav, max(eff_sp, 2.0))
                     clearance_m = round(float(clearance_m), 1) if math.isfinite(clearance_m) else None
-                # acceleration-limit -> less tilt -> steady camera
+                # acceleration-limit the command -> less tilt -> steady camera
                 cmd = np.array([vn, ve, vd])
                 if prev_cmd is None:
                     prev_cmd = cmd
