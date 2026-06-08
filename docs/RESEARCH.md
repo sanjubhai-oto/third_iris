@@ -85,6 +85,7 @@ motion, and keep the attractive (target) term always on.
 | **APF + tangential repulsion, TTC-blended** | ✅ **ADOPTED** — `sim/airsim/avoidance.py` upgraded from a plain depth threshold to attractive(target)+repulsive+**tangential** depth force, blended by time-to-collision (graceful, keeps forward progress). |
 | Target-biased depth histogram (VFH-lite) | ✅ retained — per-sector free-space pick already steers toward the open side. |
 | CBF safety filter | 📋 upgrade if APF oscillates near structures (NOVA recipe). |
+| **Robust range + loss-aware control** (`range_filter.py`) | ✅ **ADOPTED** — foreground near-cluster depth (ForeSeE/NOVA) + independent size-range `fy·H/h` (depth+size fusion, arXiv:2602.20958) + max-closing-rate/median-of-K gate (NIS outlier rejection); **freeze forward velocity when range is untrustworthy** (ByteTrack-style coast). Fixed the occlusion depth-surge (125 m → 22 m in a live jam). |
 | Perception-aware NMPC | 📋 roadmap (co-optimize visibility + avoidance + dynamics). |
 | EGO-Planner / learning-based | 📋 deferred — ROS/C++/GPU, overkill for a forward-camera reactive chaser. |
 

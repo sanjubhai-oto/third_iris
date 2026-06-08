@@ -31,6 +31,7 @@ from trajectories import TRAJECTORIES                      # noqa: E402
 from smooth_control import ImageKalman, deadband, ema       # noqa: E402
 from guidance import Vec3KF, target_from_vision, standoff_command, vfov_from_hfov  # noqa: E402
 from avoidance import apply_avoidance, clearance_and_escape    # noqa: E402
+from range_filter import RangeFilter                           # noqa: E402
 sys.path.insert(0, str(REPO / "vio"))
 from vio_estimator import VIOEstimator                         # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -148,6 +149,7 @@ def tracking_loop():
     kf = ImageKalman(q=2.5, r=0.05)
     tkf = Vec3KF()                        # 3-D target position+velocity estimator (world NED)
     vio = None                            # VIO estimator (lazy-init once image size known)
+    rf = None                             # robust range filter (lazy-init once image size known)
     state = "DETECT"; locked_id = None; lost = 0; miss = 0; shadows = 0; i_yaw = 0.0
     prev_cmd = None; A_MAX = 2.4           # ego accel limit -> steady (low-tilt) camera platform
     prev_yaw = None; YAW_SLEW = 65.0       # yaw setpoint slew limit (deg/s) -> balanced smooth/keep-up
@@ -229,7 +231,10 @@ def tracking_loop():
             cand = inside or real_dets
             if cand:
                 sel = min(cand, key=lambda d: (d["cx"]-px)**2 + (d["cy"]-py)**2)
-                locked_id = sel["id"]; state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None; kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
+                locked_id = sel["id"]; state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None
+                kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
+                if rf is not None:
+                    rf.reset()
 
         gap = float(G["gap"])
         conf = 0.0; range_m = None; cur_det = None; clearance_m = None; avoiding = False
@@ -245,16 +250,26 @@ def tracking_loop():
             mode = G["mode"]; sp = float(G["speed"])
             VFOV = vfov_from_hfov(HFOV, W, H)
             # ---- build a TARGET-POSITION measurement (world NED) from the chosen source ----
-            vis_meas = None
+            vis_meas = None; range_ok = False; range_robust = None
             if cur_det is not None:
                 conf = cur_det["conf"]; lost = 0
                 ex, ey = (cur_det["cx"] - cxI) / cxI, (cur_det["cy"] - cyI) / cyI
-                if cur_det["depth"] and cur_det["depth"] > 0.3:
-                    vis_meas = target_from_vision(ego_nav, yaw_nav, ex, ey, cur_det["depth"], HFOV, VFOV)
+                # ---- ROBUST RANGE: foreground depth + size cross-check + plausibility gate ----
+                if rf is None:
+                    rf = RangeFilter(fy=W / 2.0)        # fy = W/2 for HFOV 90 (square pixels)
+                bx = cur_det["box"]; h_px = bx[3] - bx[1]
+                if not jammed and depth is not None:     # GPS on + depth trustworthy -> learn size H
+                    rf.calibrate(rf.robust_depth(depth, bx), h_px)
+                range_robust, range_ok = rf.update(depth, bx, h_px, dt)
+                rng_for_vis = range_robust if (range_robust and range_robust > 0.3) else cur_det["depth"]
+                if rng_for_vis and rng_for_vis > 0.3:
+                    vis_meas = target_from_vision(ego_nav, yaw_nav, ex, ey, rng_for_vis, HFOV, VFOV)
                 kf.update(ex, ey, dt)
                 trail.append((int(cur_det["cx"]), int(cur_det["cy"])))
             else:
                 lost += 1
+                if rf is not None:
+                    rf.miss += 1
                 if lost > 150:
                     state = "DETECT"; locked_id = None; tkf.reset(); trail.clear()
             reached = rng_gps <= gap + 2.5
@@ -286,25 +301,27 @@ def tracking_loop():
                 tv = tv * max(0.0, 1.0 - 0.2 * miss)
             eff_sp = sp * (1.0 if meas is not None else max(0.25, 1.0 - 0.15 * miss))
             clearance_m = None; avoiding = False
-            if jammed and cur_det is not None and cur_det["depth"] and cur_det["depth"] > 0.3:
+            if jammed and cur_det is not None:
                 # ===== GPS-DENIED: pure BODY-FRAME visual servo (drift-immune) =====
-                # Uses ONLY the camera (depth range + image bearing), commanded in the body frame, so
-                # it needs no world position/heading -> immune to VIO drift. VIO still runs for absolute
-                # position awareness/telemetry, but the LOCK is held by vision alone.
-                range_m = float(cur_det["depth"])
+                # Uses ONLY the camera (robust range + image bearing), commanded in the body frame, so
+                # it needs no world position/heading -> immune to VIO drift. The LOCK is held by vision.
+                range_m = float(range_robust) if range_robust else gap
                 exj = (cur_det["cx"] - cxI) / cxI; eyj = (cur_det["cy"] - cyI) / cyI
-                fwd = float(np.clip(0.8 * (range_m - gap), -eff_sp, eff_sp))     # hold gap (fwd/back)
-                vz_b = float(np.clip(2.2 * eyj, -2.5, 2.5))                      # center vertically (climb/descend)
+                # FORWARD only when the range is trustworthy this frame; else FREEZE (loss-aware control
+                # -> the range channel is least reliable at loss, so a bad read can't surge us).
+                fwd = float(np.clip(0.8 * (range_m - gap), -eff_sp, eff_sp)) if range_ok else 0.0
+                vz_b = float(np.clip(2.2 * eyj, -2.5, 2.5))                      # center vertically
                 bearing = math.degrees(math.atan(exj * math.tan(math.radians(HFOV / 2))))
-                yr = float(np.clip(K_YR * bearing, -YR_MAX, YR_MAX))             # center horizontally (yaw rate)
+                yr = float(np.clip(K_YR * bearing, -YR_MAX, YR_MAX))             # center horizontally (yaw)
                 if G.get("avoid", True) and depth is not None:                   # forward brake on obstacle
                     ahead, sev, _ = clearance_and_escape(depth)
                     if sev > 0.0:
-                        fwd = (1.0 - sev) * fwd; avoiding = True
+                        fwd = min(fwd, (1.0 - sev) * fwd); avoiding = True
                         clearance_m = round(float(ahead), 1) if math.isfinite(ahead) else None
                 ac.moveByVelocityBodyFrameAsync(fwd, 0.0, vz_b, 0.6,
                                                 yaw_mode=airsim.YawMode(True, yr), vehicle_name="Ego")
-                yr_deg = yr; prev_yaw = None; prev_cmd = None; source = "vision(GPS-jammed)"
+                yr_deg = yr; prev_yaw = None; prev_cmd = None
+                source = "vision(GPS-jammed)" if range_ok else "vision(coast)"
             else:
                 # ===== GPS AVAILABLE: world-frame standoff (pos-P + velocity feed-forward) =====
                 vn, ve, vd, yaw_deg, range_m, yaw_err_deg = standoff_command(

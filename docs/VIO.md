@@ -48,6 +48,20 @@ This uses **only the camera** (depth + image), commanded in the body frame, so i
 position or heading and is **immune to VIO drift**. VIO then serves only absolute position awareness /
 navigation, not the lock.
 
+### Robust range + loss-aware control (`sim/airsim/range_filter.py`)
+A momentary occlusion used to make the depth at the bbox read the far **background** (e.g. 125 m → a
+forward surge). Fixed with a research-grounded `RangeFilter` (see [RESEARCH.md](RESEARCH.md)):
+- **Foreground depth** — near-cluster percentile over the bbox *interior*, not one pixel
+  (ForeSeE / NOVA histogram-mode depth, stable through occlusion).
+- **Independent size-range** `r = fy·H/h_px` with the target height **H calibrated against depth while
+  GPS is on** — it doesn't jump to background on occlusion, so it cross-checks the depth.
+- **Plausibility gate** — reject any range jump beyond the max closing rate; median-of-K backstop.
+- **Loss-aware control** — when no trustworthy range this frame, **freeze forward velocity** (the
+  range channel is least reliable at loss) and coast on yaw, instead of surging.
+
+Result: in a live 30 s jam the range stayed bounded (**max 22 m vs 125 m before**) around the 12 m gap,
+lock maintained.
+
 Measured under sustained jam: **tracked 9/11 samples over ~30 s**, range held 9–16 m around a 12 m gap,
 centering error 0.10–0.42 (vs 2/10 before the fix).
 
