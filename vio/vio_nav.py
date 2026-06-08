@@ -106,7 +106,8 @@ def main():
     print("[NAV] GPS JAMMED — navigating on VIO only", flush=True)
 
     results = []
-    KP = 0.6; VMAX = 4.0; ARRIVE = 1.8
+    KP = 0.5; VMAX = 4.0; ARRIVE = 1.8; A_MAX = 2.0   # gentler gain + accel limit -> smooth, no pitch shake
+    vcmd = np.zeros(3)
     for wp, nm in zip(wps, names):
         wt0 = time.time()
         while True:
@@ -117,7 +118,10 @@ def main():
             gray = cv2.cvtColor(scene, cv2.COLOR_BGR2GRAY)
             est.update(gray, depth, imu_of(ac), dt, mag=mag_of(ac) if use_mag else None)
             err_vec = wp - est.p
-            v = np.clip(KP * err_vec, -VMAX, VMAX)
+            v_raw = np.clip(KP * err_vec, -VMAX, VMAX)
+            v_lp = 0.4 * v_raw + 0.6 * vcmd                              # low-pass
+            vcmd = vcmd + np.clip(v_lp - vcmd, -A_MAX * dt, A_MAX * dt)  # accel limit -> smooth pitch
+            v = vcmd
             yaw_deg = math.degrees(math.atan2(err_vec[1], err_vec[0])) if np.hypot(err_vec[0], err_vec[1]) > 1.0 else None
             ymode = airsim.YawMode(False, yaw_deg) if yaw_deg is not None else airsim.YawMode(False, 0)
             ac.moveByVelocityAsync(float(v[0]), float(v[1]), float(v[2]), 0.5,

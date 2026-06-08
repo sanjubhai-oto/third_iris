@@ -162,6 +162,7 @@ class VIOEstimator:
         # direct odometry (Steinbrücker/Park) if installed. Falls back to umeyama if open3d missing.
         self.backend = backend if (backend != "open3d" or _HAS_O3D) else "umeyama"
         self._o3d_intr = None
+        self._o3d_init = np.eye(4)            # odo_init seed (IMU-predicted relative pose; identity default)
         if self.backend == "open3d":
             self._o3d_intr = _o3d.camera.PinholeCameraIntrinsic(
                 int(width), int(height), self.fx, self.fy, self.cx, self.cy)
@@ -215,10 +216,13 @@ class VIOEstimator:
                 _o3d.geometry.Image(np.ascontiguousarray(d.astype(np.float32))),
                 depth_scale=1.0, depth_trunc=self.max_depth, convert_rgb_to_intensity=True)
             src = mk(self.prev_gray, self.prev_depth); tgt = mk(gray, depth)
+            opt = _o3d.pipelines.odometry.OdometryOption()
+            opt.depth_min = 0.3
+            opt.depth_max = self.max_depth          # default 4 m rejects everything a drone sees -> 0% conv
+            opt.depth_diff_max = 0.07               # default 0.03 too tight for sim depth
             ok, T, _info = _o3d.pipelines.odometry.compute_rgbd_odometry(
-                src, tgt, self._o3d_intr, np.eye(4),
-                _o3d.pipelines.odometry.RGBDOdometryJacobianFromHybridTerm(),
-                _o3d.pipelines.odometry.OdometryOption())
+                src, tgt, self._o3d_intr, self._o3d_init,
+                _o3d.pipelines.odometry.RGBDOdometryJacobianFromHybridTerm(), opt)
             if not ok:
                 return None
             R = np.asarray(T)[:3, :3]; t = np.asarray(T)[:3, 3]
@@ -271,14 +275,22 @@ class VIOEstimator:
                         if R is not None:
                             disp_cam = -R.T @ t      # camera displacement in prev-cam frame
                             vo_disp_world = R_wc @ disp_cam
-        # ---- integrate translation ----
-        if vo_disp_world is not None and np.all(np.isfinite(vo_disp_world)) \
-                and np.linalg.norm(vo_disp_world) < 5.0:        # reject blunders (>5 m/frame)
+        # ---- REJECT-AND-COAST GATE: accept the VO step only if it is finite, within a plausible
+        #      per-frame speed, AND consistent with the smooth predicted motion. One bad (sky / low
+        #      texture) frame otherwise corrupts the whole trajectory -> this is what bounds the drift.
+        gate_ok = False
+        if vo_disp_world is not None and np.all(np.isfinite(vo_disp_world)):
+            implied_speed = float(np.linalg.norm(vo_disp_world)) / dt
+            predicted = self.v * dt                              # where the smooth motion expects us
+            dev = float(np.linalg.norm(vo_disp_world - predicted))
+            gate = max(1.5, 2.5 * float(np.linalg.norm(self.v)) * dt)
+            gate_ok = implied_speed < 12.0 and dev < gate
+        if gate_ok:
             self.p = self.p + vo_disp_world
             self.v = 0.6 * self.v + 0.4 * (vo_disp_world / dt)  # smoothed velocity estimate
             self.last_vo_ok = True; self.coast = 0
         else:
-            # VO failed -> coast on IMU accel (gravity-compensated), short horizon only
+            # VO rejected/failed -> coast on IMU accel (gravity-compensated), short horizon only
             self.last_vo_ok = False; self.coast += 1
             if accel is not None and self.coast < 12:
                 a_world = R_wb @ accel + G_NED
