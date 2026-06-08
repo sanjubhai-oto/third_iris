@@ -55,9 +55,32 @@ centering error 0.10–0.42 (vs 2/10 before the fix).
 `nav_source` (GPS / VIO), `vio_drift` (m, vs truth — for the demo), an amber **GPS JAMMED — VIO NAV**
 banner on the video, and the jam toggle. Backend route `POST /set_jam {jammed: true|false}`.
 
+## GPS-denied waypoint navigation — `vio/vio_nav.py`
+
+Beyond *following a visible target*, the drone can **fly to coordinates with no GPS and no target in
+view**, steering purely on the VIO pose. `vio_nav.py` primes + calibrates the compass with GPS on,
+then **jams GPS** and flies a 4-waypoint square (incl. an altitude change), logging the *true*
+position error vs ground truth at each waypoint.
+
+### Magnetometer yaw-aid (essential)
+Pure gyro yaw drifts with no absolute reference, which compounds into position divergence. The
+estimator fuses the **magnetometer** (`getMagnetometerData`, tilt-compensated heading, offset
+**calibrated against truth at the GPS anchor**) to bound yaw drift (`VIOEstimator.update(mag=...)`).
+The comparison is decisive:
+
+| GPS-denied nav (VIO only), ~56 m square | mean error | max error | verdict |
+|---|---|---|---|
+| **with magnetometer aid** | **4.37 m** | 7.02 m | ✅ USABLE |
+| without magnetometer aid | 20.63 m | 40.03 m (diverged) | ❌ HIGH DRIFT |
+
+So GPS-denied point-to-point navigation works (a few metres of error, growing with distance as
+odometry drift accumulates), and the magnetometer aid is what keeps it bounded. Run:
+`python -u vio/vio_nav.py` (add `--no-mag` to see the divergence).
+
 ## Limitations & next steps
-- **VIO yaw drifts** (no magnetometer absolute-heading reference) — bounded over tens of seconds; a
-  magnetometer (`getMagnetometerData`) yaw aid would fix long-duration jams.
+- Position error still **grows with distance** (it's odometry — no loop closure); good for tens of
+  metres / tens of seconds of GPS denial, not unbounded. Loop closure (ORB-SLAM3) or PX4 EKF2 fusion
+  would bound it further.
 - **Aggressive chase degrades VO** (large inter-frame motion at ~5 fps + YOLO sharing the CPU) → more
   drift than the gentle standalone test. Running VIO in its own thread at higher rate would help.
 - This is a self-contained estimator, **not** PX4 EKF2 fusion. The original Phase-3 plan

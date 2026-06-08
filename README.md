@@ -37,6 +37,7 @@ fallback, all driven from a browser **Web UI**.
 | Obstacle avoidance | 0 false triggers in open air, does not brake for the (small) target |
 | **VIO drift (GPS jammed 22 s / 38 m)** | **98% VO success, ~4.5 m drift** (bounded, not divergence) |
 | **GPS-jammed tracking** | **9/11 frames tracked over ~30 s**, gap held 9–16 m, centered |
+| **GPS-denied waypoint nav** (VIO only, ~56 m square) | reaches every waypoint; **mean error 4.4 m** with magnetometer yaw-aid (20.6 m / diverges without it) |
 
 ---
 

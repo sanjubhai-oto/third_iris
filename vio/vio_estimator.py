@@ -79,6 +79,40 @@ def yaw_of(q):
     return math.atan2(R[1, 0], R[0, 0])
 
 
+def _wrap(a):
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+def rpy_of(q):
+    """roll, pitch, yaw (rad) from a body->world quaternion (NED ZYX)."""
+    R = quat_to_R(q)
+    roll = math.atan2(R[2, 1], R[2, 2])
+    pitch = -math.asin(max(-1.0, min(1.0, R[2, 0])))
+    yaw = math.atan2(R[1, 0], R[0, 0])
+    return roll, pitch, yaw
+
+
+def euler_to_quat(roll, pitch, yaw):
+    """(roll,pitch,yaw) rad -> (x,y,z,w) body->world quaternion."""
+    cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+    cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+    cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+    return np.array([sr * cp * cy - cr * sp * sy,
+                     cr * sp * cy + sr * cp * sy,
+                     cr * cp * sy - sr * sp * cy,
+                     cr * cp * cy + sr * sp * sy])
+
+
+def mag_heading(mag_body, roll, pitch):
+    """Tilt-compensated magnetic heading (rad) from a body-frame magnetometer vector."""
+    mx, my, mz = float(mag_body[0]), float(mag_body[1]), float(mag_body[2])
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    mxh = mx * cp + mz * sp
+    myh = mx * sr * sp + my * cr - mz * sr * cp
+    return math.atan2(-myh, mxh)
+
+
 # ----------------------------------------------------------------- rigid 3D-3D (Umeyama + RANSAC)
 def umeyama(P, Q):
     """Least-squares rigid R,t with q_i ~= R p_i + t (no scale). Returns (R, t)."""
@@ -140,12 +174,26 @@ class VIOEstimator:
         self.last_vo_ok = False
         self.coast = 0                                # consecutive VO-failure frames
         self.rng = np.random.default_rng(0)
+        self.mag_offset = None                        # calibrated (true_yaw - raw_mag_heading) at anchor
 
     # ---- anchoring (called while GPS is available) ----
     def anchor(self, pos, quat):
         self.p = np.asarray(pos, float).copy()
         self.q = quat_norm(np.asarray(quat, float))
         self.v[:] = 0.0
+
+    def calibrate_mag(self, mag_body):
+        """Calibrate the compass offset against the (truth-anchored) attitude — call while GPS is on."""
+        r, p, y = rpy_of(self.q)
+        self.mag_offset = _wrap(y - mag_heading(mag_body, r, p))
+
+    def _apply_mag(self, mag_body, k=0.06):
+        """Correct yaw toward the magnetometer heading (bounds gyro yaw drift). roll/pitch untouched."""
+        if self.mag_offset is None:
+            return
+        r, p, y = rpy_of(self.q)
+        mag_y = _wrap(mag_heading(mag_body, r, p) + self.mag_offset)
+        self.q = quat_norm(euler_to_quat(r, p, y + k * _wrap(mag_y - y)))
 
     def _backproject(self, pts, depth):
         """pts (N,2) pixel -> (valid_mask, P (M,3) camera-frame 3D)."""
@@ -178,17 +226,21 @@ class VIOEstimator:
         except Exception:
             return None
 
-    def update(self, gray, depth, imu, dt):
-        """Advance the estimate one frame. imu = (accel_body(3), gyro_body(3)). Returns pose dict.
+    def update(self, gray, depth, imu, dt, mag=None):
+        """Advance the estimate one frame. imu = (accel_body(3), gyro_body(3)); mag = body magnetometer
+        vector (3) or None. Returns pose dict.
 
         While GPS is available the caller should still run this (to keep features warm) and then call
-        anchor(); while jammed, the returned p/q is the dead-reckoned estimate.
+        anchor(); while jammed, the returned p/q is the dead-reckoned estimate. The magnetometer (when
+        provided + calibrated) bounds yaw drift.
         """
         dt = float(max(1e-3, min(0.3, dt)))
-        # ---- IMU: propagate attitude from gyro ----
+        # ---- IMU: propagate attitude from gyro, then correct yaw with the magnetometer ----
         if imu is not None:
             accel = np.asarray(imu[0], float); gyro = np.asarray(imu[1], float)
             self.q = quat_norm(quat_mul(self.q, quat_from_gyro(gyro, dt)))
+            if mag is not None:
+                self._apply_mag(mag)
         else:
             accel = None
         R_wb = quat_to_R(self.q)
