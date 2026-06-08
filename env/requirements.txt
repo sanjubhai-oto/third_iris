@@ -1,0 +1,28 @@
+# Phase 1 perception stack (cross-platform).
+#
+# IMPORTANT (Blackwell / RTX 50-series): install PyTorch from the CUDA 12.8 index FIRST,
+# then this file. setup_windows.ps1 does this for you. Manual:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#
+# Ultralytics provides YOLO26 *and* the built-in ByteTrack/BoT-SORT trackers.
+ultralytics>=8.4.0          # YOLO26 + trackers (track mode, bytetrack.yaml)
+lap>=0.5.12                 # linear assignment — required by ByteTrack/BoT-SORT track mode
+
+# Core CV / numerics
+numpy>=1.26
+opencv-python>=4.10
+pillow>=10.0
+pyyaml>=6.0
+tqdm>=4.66
+
+# Evaluation
+pycocotools>=2.0.7          # detection mAP
+motmetrics>=1.4.0           # tracking MOTA / IDF1 / ID-switches
+pandas>=2.0
+
+# Dataset download/convert helpers
+requests>=2.31
+scipy>=1.11
+
+# Optional: SAM 2 auto-masking for segmentation labels (heavy; install on demand)
+#   pip install "git+https://github.com/facebookresearch/sam2.git"

@@ -1,0 +1,28 @@
+# PX4 EKF2 parameters for GPS-denied external-vision (VIO) fusion.
+# Load in QGroundControl (Parameters -> Tools -> Load from file) or via MAVLink param set,
+# while PX4 SITL is running. Reboot the vehicle after loading.
+#
+# Format: <vehicle_id> <component_id> <param_name> <value> <type(6=int,9=float)>
+
+# --- Enable external vision aiding ---
+# EKF2_EV_CTRL bitmask: 1=horiz pos, 2=vert pos, 4=velocity, 8=yaw.  11 = horiz+vert pos+yaw.
+1 1 EKF2_EV_CTRL 11 6
+
+# Height reference: 3 = Vision (use EV for altitude instead of baro/GPS).
+1 1 EKF2_HGT_REF 3 6
+
+# Vision measurement delay relative to IMU (ms). TUNE to your pipeline latency.
+# GT bridge: ~5 ms. OpenVINS in sim: typically 30-60 ms.
+1 1 EKF2_EV_DELAY 5.0 9
+
+# --- Disable GPS so we genuinely test GPS-denied nav ---
+# EKF2_GPS_CTRL = 0 turns off all GPS aiding.
+1 1 EKF2_GPS_CTRL 0 6
+
+# --- Position/velocity source for the commander/flight modes ---
+# Allow flying position-controlled modes on EV-only estimate.
+1 1 EKF2_REQ_GPS_H 10.0 9
+
+# Optional: vision observation noise (m). Lower = trust vision more.
+1 1 EKF2_EVP_NOISE 0.05 9
+1 1 EKF2_EVA_NOISE 0.05 9

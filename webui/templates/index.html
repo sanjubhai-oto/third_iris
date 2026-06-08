@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UAV Visual Tracking — Ego chasing Target</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --panel-2: #0e141c;
+    --border: #1f2a37;
+    --text: #e5edf5;
+    --dim: #7d8a99;
+    --accent: #38bdf8;
+    --green: #22c55e;
+    --orange: #ff9800;
+    --red: #ef4444;
+    --gray: #64748b;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+  }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; gap: 18px;
+    padding: 12px 20px;
+    background: linear-gradient(180deg, #131b26, #0d131b);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  header .title {
+    font-size: 17px; font-weight: 600; letter-spacing: .3px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  header .title .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  }
+  header .spacer { flex: 1; }
+  .state-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 18px; border-radius: 8px;
+    font-size: 18px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase;
+    background: #1a2230; color: var(--gray);
+    border: 1px solid var(--border);
+    transition: background .2s, color .2s, box-shadow .2s;
+    min-width: 130px; justify-content: center;
+  }
+  .offline-pill {
+    display: none; align-items: center; gap: 6px;
+    padding: 5px 10px; border-radius: 6px;
+    background: rgba(239,68,68,.12); color: var(--red);
+    border: 1px solid rgba(239,68,68,.4);
+    font-size: 12px; font-weight: 600;
+  }
+  .offline-pill.show { display: inline-flex; }
+  .offline-pill .blink {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--red);
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink { 50% { opacity: .2; } }
+
+  /* Main */
+  main {
+    flex: 1; display: flex; gap: 16px; padding: 16px;
+    align-items: stretch; min-height: 0;
+  }
+
+  /* Video panel */
+  .video-wrap {
+    flex: 1; position: relative;
+    background: #05080c;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; min-height: 320px;
+  }
+  #feed {
+    max-width: 100%; max-height: 100%;
+    object-fit: contain; cursor: crosshair; display: block;
+  }
+  /* Center reticle */
+  .reticle {
+    position: absolute; top: 50%; left: 50%;
+    width: 60px; height: 60px;
+    transform: translate(-50%, -50%);
+    pointer-events: none; opacity: .55;
+  }
+  .reticle::before, .reticle::after {
+    content: ""; position: absolute; background: rgba(229,237,245,.7);
+  }
+  .reticle::before { left: 50%; top: 0; width: 1px; height: 100%; transform: translateX(-50%); }
+  .reticle::after { top: 50%; left: 0; height: 1px; width: 100%; transform: translateY(-50%); }
+  .reticle .ring {
+    position: absolute; inset: 18px; border: 1px solid rgba(229,237,245,.55);
+    border-radius: 50%;
+  }
+  .video-hint {
+    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(5,8,12,.72); color: var(--text);
+    padding: 7px 14px; border-radius: 20px;
+    font-size: 12.5px; letter-spacing: .2px;
+    border: 1px solid var(--border);
+    pointer-events: none; white-space: nowrap;
+    backdrop-filter: blur(4px);
+  }
+  .video-hint.hidden { display: none; }
+
+  /* Sidebar */
+  aside {
+    width: 320px; flex: 0 0 320px;
+    display: flex; flex-direction: column; gap: 16px;
+    overflow-y: auto;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .card h2 {
+    margin: 0 0 12px; font-size: 12px; font-weight: 700;
+    letter-spacing: 1.2px; text-transform: uppercase; color: var(--dim);
+  }
+
+  /* Telemetry rows */
+  .tele-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 5px 0; border-bottom: 1px dashed rgba(31,42,55,.6);
+  }
+  .tele-row:last-child { border-bottom: none; }
+  .tele-row .lbl { color: var(--dim); font-size: 12.5px; }
+  .tele-row .val {
+    font-family: var(--mono); font-size: 13.5px; font-weight: 600;
+    color: var(--text); text-align: right;
+  }
+  .val.good { color: var(--green); }
+  .val.warn { color: var(--orange); }
+  .val.bad { color: var(--red); }
+
+  /* Controls */
+  .ctrl-group { margin-bottom: 14px; }
+  .ctrl-group label {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12.5px; color: var(--dim); margin-bottom: 8px;
+  }
+  .ctrl-group label .cur {
+    font-family: var(--mono); color: var(--accent); font-weight: 700; font-size: 14px;
+  }
+  .gap-inputs { display: flex; gap: 10px; align-items: center; }
+  input[type="number"] {
+    width: 72px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 7px 9px; font-family: var(--mono); font-size: 14px;
+  }
+  input[type="range"] {
+    flex: 1; accent-color: var(--accent); cursor: pointer;
+  }
+  .btn {
+    width: 100%; padding: 11px; border: 1px solid var(--border);
+    border-radius: 9px; background: #1a2230; color: var(--text);
+    font-size: 13.5px; font-weight: 600; cursor: pointer;
+    transition: background .15s, border-color .15s, transform .05s;
+    margin-top: 8px;
+  }
+  .btn:hover { background: #222d3d; border-color: #2c3a4c; }
+  .btn:active { transform: translateY(1px); }
+  .btn.danger {
+    background: rgba(239,68,68,.14); color: #fca5a5;
+    border-color: rgba(239,68,68,.45);
+  }
+  .btn.danger:hover { background: rgba(239,68,68,.24); }
+
+  /* Legend */
+  .legend-item {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 12.5px; color: var(--dim); padding: 4px 0;
+  }
+  .legend-item .swatch {
+    width: 14px; height: 14px; border-radius: 3px; flex: 0 0 14px;
+    border: 1px solid rgba(255,255,255,.15);
+  }
+  .legend-item .cross {
+    position: relative; width: 14px; height: 14px; flex: 0 0 14px;
+  }
+  .legend-item .cross::before, .legend-item .cross::after {
+    content: ""; position: absolute; background: #fff;
+  }
+  .legend-item .cross::before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
+  .legend-item .cross::after { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
+
+  @media (max-width: 900px) {
+    main { flex-direction: column; }
+    aside { width: 100%; flex: none; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="title"><span class="dot"></span> UAV Visual Tracking — Ego chasing Target</div>
+    <div class="spacer"></div>
+    <div class="offline-pill" id="offline"><span class="blink"></span> backend offline</div>
+    <div class="state-badge" id="stateBadge">—</div>
+  </header>
+
+  <main>
+    <!-- VIDEO PANEL -->
+    <div class="video-wrap" id="videoWrap">
+      <img id="feed" src="/video_feed" alt="Live video feed">
+      <div class="reticle"><span class="ring"></span></div>
+      <div class="video-hint" id="videoHint">Click a detected target box to LOCK · click elsewhere = nearest</div>
+    </div>
+
+    <!-- SIDEBAR -->
+    <aside>
+      <!-- Telemetry -->
+      <div class="card">
+        <h2>Telemetry</h2>
+        <div id="telemetry">
+          <div class="tele-row"><span class="lbl">State</span><span class="val" data-k="state">--</span></div>
+          <div class="tele-row"><span class="lbl">Locked</span><span class="val" data-k="locked">--</span></div>
+          <div class="tele-row"><span class="lbl">Target ID</span><span class="val" data-k="target_id">--</span></div>
+          <div class="tele-row"><span class="lbl">Confidence</span><span class="val" data-k="conf">--</span></div>
+          <div class="tele-row"><span class="lbl">Range to target</span><span class="val" data-k="range_m">--</span></div>
+          <div class="tele-row"><span class="lbl">Set gap</span><span class="val" data-k="gap">--</span></div>
+          <div class="tele-row"><span class="lbl">Ego altitude</span><span class="val" data-k="alt_m">--</span></div>
+          <div class="tele-row"><span class="lbl">Pointing error</span><span class="val" data-k="yaw_rate_deg">--</span></div>
+          <div class="tele-row"><span class="lbl">Centering error</span><span class="val" data-k="center_err">--</span></div>
+          <div class="tele-row"><span class="lbl">Ego N</span><span class="val" data-k="ego_n">--</span></div>
+          <div class="tele-row"><span class="lbl">Ego E</span><span class="val" data-k="ego_e">--</span></div>
+          <div class="tele-row"><span class="lbl">Ego D</span><span class="val" data-k="ego_d">--</span></div>
+          <div class="tele-row"><span class="lbl">Detections</span><span class="val" data-k="n_detections">--</span></div>
+          <div class="tele-row"><span class="lbl">Vision rate</span><span class="val" data-k="vision_rate">--</span></div>
+          <div class="tele-row"><span class="lbl">Shadows rejected</span><span class="val" data-k="shadows">--</span></div>
+          <div class="tele-row"><span class="lbl">FPS</span><span class="val" data-k="fps">--</span></div>
+          <div class="tele-row"><span class="lbl">Video source</span><span class="val" data-k="video_src">--</span></div>
+          <div class="tele-row"><span class="lbl">Telem source</span><span class="val" data-k="telem_src">--</span></div>
+          <div class="tele-row"><span class="lbl">Camera</span><span class="val" data-k="camera">--</span></div>
+          <div class="tele-row"><span class="lbl">Obstacle clearance</span><span class="val" data-k="clearance_m">--</span></div>
+          <div class="tele-row"><span class="lbl">Navigation</span><span class="val" data-k="nav_source">--</span></div>
+          <div class="tele-row"><span class="lbl">VIO drift</span><span class="val" data-k="vio_drift">--</span></div>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="card">
+        <h2>Controls</h2>
+        <div class="ctrl-group">
+          <label>Set gap (meters) <span class="cur" id="gapCur">12</span></label>
+          <div class="gap-inputs">
+            <input type="number" id="gapNum" min="0" max="50" step="0.5" value="12">
+            <input type="range" id="gapRange" min="0" max="50" step="0.5" value="12">
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <label>Max speed (m/s) <span class="cur" id="spdCur">5</span></label>
+          <input type="range" id="spdRange" min="0.5" max="12" step="0.5" value="5" style="width:100%">
+        </div>
+        <div class="ctrl-group">
+          <label>Guidance mode</label>
+          <select id="modeSel" style="width:100%;padding:8px;background:#1a2230;color:#cdd6e4;border:1px solid #1f2a37;border-radius:6px;font-size:13px;">
+            <option value="fused">Fused (location + vision)</option>
+            <option value="vision_after_arrival">Vision after arrival</option>
+            <option value="vision">Vision only</option>
+            <option value="location">Location only</option>
+          </select>
+        </div>
+        <div class="ctrl-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="avoidChk" checked> Obstacle avoidance (depth)
+          </label>
+        </div>
+        <div class="ctrl-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="jamChk"> Simulate GPS jamming → navigate on VIO
+          </label>
+        </div>
+        <button class="btn" id="btnClear">Clear Lock</button>
+        <button class="btn danger" id="btnLand">Land</button>
+      </div>
+
+      <!-- Sources (real-world: separate video + telemetry receivers) -->
+      <div class="card">
+        <h2>Sources (link protocol)</h2>
+        <div class="ctrl-group">
+          <label>Video feed <span class="cur" id="vidActive">airsim</span></label>
+          <select id="vidProto" style="width:100%;padding:8px;background:#1a2230;color:#cdd6e4;border:1px solid #1f2a37;border-radius:6px;font-size:13px;">
+            <option value="airsim">AirSim (simulator)</option>
+            <option value="rtsp">RTSP receiver</option>
+            <option value="udp">UDP stream</option>
+            <option value="http">HTTP / MJPEG</option>
+            <option value="device">Capture device</option>
+            <option value="file">File</option>
+          </select>
+          <input type="text" id="vidEp" placeholder="endpoint e.g. rtsp://192.168.1.10:8554/fpv  or  0"
+                 style="width:100%;margin-top:6px;padding:7px;background:#1a2230;color:#cdd6e4;border:1px solid #1f2a37;border-radius:6px;font-size:12px;">
+          <button class="btn" id="btnVid" style="margin-top:6px;">Apply video source</button>
+        </div>
+        <div class="ctrl-group">
+          <label>Telemetry <span class="cur" id="telActive">airsim</span> <span id="mavStat" style="color:#94a3b8"></span></label>
+          <select id="telProto" style="width:100%;padding:8px;background:#1a2230;color:#cdd6e4;border:1px solid #1f2a37;border-radius:6px;font-size:13px;">
+            <option value="airsim">AirSim (simulator)</option>
+            <option value="mavlink_serial">MAVLink (serial)</option>
+            <option value="mavlink_udp">MAVLink (UDP)</option>
+            <option value="mavlink_tcp">MAVLink (TCP)</option>
+          </select>
+          <input type="text" id="telEp" placeholder="serial COM5,57600 · udp 0.0.0.0:14550 · tcp 127.0.0.1:5760"
+                 style="width:100%;margin-top:6px;padding:7px;background:#1a2230;color:#cdd6e4;border:1px solid #1f2a37;border-radius:6px;font-size:12px;">
+          <button class="btn" id="btnTel" style="margin-top:6px;">Apply telemetry source</button>
+        </div>
+      </div>
+
+      <!-- Legend -->
+      <div class="card">
+        <h2>On-video legend</h2>
+        <div class="legend-item"><span class="swatch" style="background:#22c55e"></span> Locked target + centering line</div>
+        <div class="legend-item"><span class="cross"></span> Frame center</div>
+        <div class="legend-item"><span class="swatch" style="background:#eab308"></span> Last-5s path</div>
+        <div class="legend-item"><span class="swatch" style="background:#94a3b8"></span> Rejected shadow</div>
+      </div>
+    </aside>
+  </main>
+
+<script>
+(function () {
+  "use strict";
+
+  var feed = document.getElementById("feed");
+  var videoHint = document.getElementById("videoHint");
+  var stateBadge = document.getElementById("stateBadge");
+  var offline = document.getElementById("offline");
+  var gapNum = document.getElementById("gapNum");
+  var gapRange = document.getElementById("gapRange");
+  var gapCur = document.getElementById("gapCur");
+  var btnClear = document.getElementById("btnClear");
+  var btnLand = document.getElementById("btnLand");
+
+  var GAP_MIN = 0, GAP_MAX = 50;
+
+  // ---- helpers ----
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function fmt(v, dec) {
+    if (v === null || v === undefined || v === "") return "--";
+    var n = Number(v);
+    if (typeof v === "number" || (!isNaN(n) && v !== true && v !== false)) {
+      if (isNaN(n)) return "--";
+      return n.toFixed(dec === undefined ? 2 : dec);
+    }
+    return String(v);
+  }
+
+  function markOffline(isOff) {
+    offline.classList.toggle("show", isOff);
+  }
+
+  // ---- state badge ----
+  function applyStateBadge(state) {
+    var s = (state || "").toString().toUpperCase();
+    var color = "var(--gray)", text = s || "—";
+    if (s === "DETECT" || s === "SEARCH") {
+      color = "var(--orange)";
+    } else if (s === "LOCKED" || s === "TRACK") {
+      color = "var(--green)";
+    } else if (s === "LOST") {
+      color = "var(--red)";
+    }
+    stateBadge.textContent = text;
+    stateBadge.style.color = color;
+    stateBadge.style.borderColor = color;
+    stateBadge.style.background = "color-mix(in srgb, " + color + " 14%, #1a2230)";
+    stateBadge.style.boxShadow = "0 0 14px color-mix(in srgb, " + color + " 35%, transparent)";
+  }
+
+  // ---- telemetry render ----
+  function setVal(key, value) {
+    var el = document.querySelector('.val[data-k="' + key + '"]');
+    if (el) el.textContent = value;
+  }
+
+  function renderTelemetry(t) {
+    applyStateBadge(t.state);
+    setVal("state", t.state == null ? "--" : String(t.state));
+
+    var lockedVal = document.querySelector('.val[data-k="locked"]');
+    var isLocked = (t.locked === true || t.locked === "true" || t.locked === 1);
+    if (lockedVal) {
+      lockedVal.textContent = (t.locked == null) ? "--" : (isLocked ? "Yes" : "No");
+      lockedVal.className = "val " + (isLocked ? "good" : "");
+    }
+    // Hide hint once locked
+    videoHint.classList.toggle("hidden", isLocked);
+
+    setVal("target_id", t.target_id == null ? "--" : String(t.target_id));
+    setVal("conf", fmt(t.conf, 2));
+    setVal("range_m", t.range_m == null ? "--" : fmt(t.range_m, 1) + " m");
+    setVal("gap", t.gap == null ? "--" : fmt(t.gap, 1) + " m");
+    setVal("alt_m", t.alt_m == null ? "--" : fmt(t.alt_m, 1) + " m");
+    setVal("yaw_rate_deg", t.yaw_rate_deg == null ? "--" : fmt(t.yaw_rate_deg, 1) + " °");
+    setVal("center_err", t.center_err == null ? "--" : fmt(t.center_err, 3) + " (0=centered)");
+    setVal("video_src", t.video_src == null ? "--" : t.video_src);
+    setVal("telem_src", t.telem_src == null ? "--" : t.telem_src + (t.mav && t.mav !== "--" ? " (" + t.mav + ")" : ""));
+    var va = document.getElementById("vidActive"); if (va && t.video_src) va.textContent = t.video_src;
+    var ta = document.getElementById("telActive"); if (ta && t.telem_src) ta.textContent = t.telem_src;
+    var ms = document.getElementById("mavStat"); if (ms) ms.textContent = (t.mav && t.mav !== "--") ? t.mav : "";
+    setVal("camera", t.camera == null ? "--" : t.camera);
+    setVal("clearance_m", t.clearance_m == null ? (t.avoid ? "clear" : "off")
+                          : (t.avoiding ? "⚠ " : "") + fmt(t.clearance_m, 1) + " m");
+    setVal("nav_source", t.nav_source == null ? "--" : (t.jammed ? "⚠ " : "") + t.nav_source);
+    setVal("vio_drift", t.vio_drift == null ? "--" : fmt(t.vio_drift, 2) + " m");
+    setVal("ego_n", fmt(t.ego_n, 2));
+    setVal("ego_e", fmt(t.ego_e, 2));
+    setVal("ego_d", fmt(t.ego_d, 2));
+    setVal("n_detections", t.n_detections == null ? "--" : String(t.n_detections));
+
+    if (t.vision_rate == null) {
+      setVal("vision_rate", "--");
+    } else {
+      var vr = Number(t.vision_rate);
+      // accept either fraction (0..1) or already-percent
+      var pct = (vr <= 1.0001) ? vr * 100 : vr;
+      setVal("vision_rate", fmt(pct, 1) + " %");
+    }
+
+    setVal("shadows", t.shadows == null ? "--" : String(t.shadows));
+    setVal("fps", fmt(t.fps, 1));
+  }
+
+  // ---- telemetry poll ----
+  function pollTelemetry() {
+    fetch("/telemetry", { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        markOffline(false);
+        renderTelemetry(data || {});
+      })
+      .catch(function () {
+        markOffline(true);
+      });
+  }
+  setInterval(pollTelemetry, 200);
+  pollTelemetry();
+
+  // ---- click to select target ----
+  feed.addEventListener("click", function (ev) {
+    var rect = feed.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    var x = clamp((ev.clientX - rect.left) / rect.width, 0, 1);
+    var y = clamp((ev.clientY - rect.top) / rect.height, 0, 1);
+    fetch("/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x: x, y: y })
+    }).then(function (r) {
+      markOffline(!r.ok);
+    }).catch(function () {
+      markOffline(true);
+    });
+  });
+
+  // ---- gap controls ----
+  function syncGapUI(v) {
+    gapNum.value = v;
+    gapRange.value = v;
+    gapCur.textContent = Number(v).toFixed(Number(v) % 1 === 0 ? 0 : 1);
+  }
+
+  function postGap(v) {
+    fetch("/set_gap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gap: v })
+    }).then(function (r) {
+      markOffline(!r.ok);
+    }).catch(function () {
+      markOffline(true);
+    });
+  }
+
+  function onGapChange(raw) {
+    var v = clamp(parseFloat(raw), GAP_MIN, GAP_MAX);
+    if (isNaN(v)) return;
+    syncGapUI(v);
+    postGap(v);
+  }
+
+  gapRange.addEventListener("input", function () {
+    syncGapUI(this.value);
+    gapCur.textContent = Number(this.value).toFixed(Number(this.value) % 1 === 0 ? 0 : 1);
+  });
+  gapRange.addEventListener("change", function () { onGapChange(this.value); });
+  gapNum.addEventListener("change", function () { onGapChange(this.value); });
+
+  // ---- action buttons ----
+  function postAction(url) {
+    fetch(url, { method: "POST" })
+      .then(function (r) { markOffline(!r.ok); })
+      .catch(function () { markOffline(true); });
+  }
+  btnClear.addEventListener("click", function () { postAction("/clear"); });
+  btnLand.addEventListener("click", function () {
+    if (confirm("Command vehicle to LAND?")) postAction("/land");
+  });
+
+  // ---- guidance mode ----
+  var modeSel = document.getElementById("modeSel");
+  modeSel.addEventListener("change", function () {
+    fetch("/set_mode", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: this.value }) })
+      .then(function (r) { markOffline(!r.ok); }).catch(function () { markOffline(true); });
+  });
+
+  // ---- max speed ----
+  var spdRange = document.getElementById("spdRange"), spdCur = document.getElementById("spdCur");
+  spdRange.addEventListener("input", function () { spdCur.textContent = this.value; });
+  spdRange.addEventListener("change", function () {
+    fetch("/set_speed", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ speed: parseFloat(this.value) }) })
+      .then(function (r) { markOffline(!r.ok); }).catch(function () { markOffline(true); });
+  });
+
+  // ---- sources: video + telemetry link protocol ----
+  function postSrc(url, proto, ep) {
+    fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proto: proto, endpoint: ep }) })
+      .then(function (r) { markOffline(!r.ok); }).catch(function () { markOffline(true); });
+  }
+  document.getElementById("btnVid").addEventListener("click", function () {
+    postSrc("/set_video_source", document.getElementById("vidProto").value,
+            document.getElementById("vidEp").value);
+  });
+  document.getElementById("btnTel").addEventListener("click", function () {
+    postSrc("/set_telem_source", document.getElementById("telProto").value,
+            document.getElementById("telEp").value);
+  });
+
+  // ---- obstacle avoidance toggle ----
+  document.getElementById("avoidChk").addEventListener("change", function () {
+    fetch("/set_avoid", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ avoid: this.checked }) })
+      .then(function (r) { markOffline(!r.ok); }).catch(function () { markOffline(true); });
+  });
+
+  // ---- GPS jamming toggle (navigate on VIO) ----
+  document.getElementById("jamChk").addEventListener("change", function () {
+    fetch("/set_jam", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jammed: this.checked }) })
+      .then(function (r) { markOffline(!r.ok); }).catch(function () { markOffline(true); });
+  });
+})();
+</script>
+</body>
+</html>
