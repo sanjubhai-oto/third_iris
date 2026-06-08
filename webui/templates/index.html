@@ -285,6 +285,16 @@
             <input type="checkbox" id="jamChk"> Simulate GPS jamming → navigate on VIO
           </label>
         </div>
+        <div class="ctrl-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="strikeChk"> Vehicle strike mode (click a car to select)
+            <span class="cur" id="strikeStat" style="color:#ff8c00"></span>
+          </label>
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <button class="btn danger" id="btnStrike" style="flex:1;">STRIKE</button>
+            <button class="btn" id="btnAbort" style="flex:1;">Abort</button>
+          </div>
+        </div>
         <button class="btn" id="btnClear">Clear Lock</button>
         <button class="btn danger" id="btnLand">Land</button>
       </div>
@@ -413,6 +423,9 @@
     var va = document.getElementById("vidActive"); if (va && t.video_src) va.textContent = t.video_src;
     var ta = document.getElementById("telActive"); if (ta && t.telem_src) ta.textContent = t.telem_src;
     var ms = document.getElementById("mavStat"); if (ms) ms.textContent = (t.mav && t.mav !== "--") ? t.mav : "";
+    var ss = document.getElementById("strikeStat");
+    if (ss) ss.textContent = (t.strike_mode || (t.strike_msg && t.strike_msg !== "--"))
+      ? ((t.n_vehicles != null ? t.n_vehicles + " cars · " : "") + (t.strike_msg || "")) : "";
     setVal("camera", t.camera == null ? "--" : t.camera);
     setVal("clearance_m", t.clearance_m == null ? (t.avoid ? "clear" : "off")
                           : (t.avoiding ? "⚠ " : "") + fmt(t.clearance_m, 1) + " m");
@@ -460,7 +473,10 @@
     if (rect.width === 0 || rect.height === 0) return;
     var x = clamp((ev.clientX - rect.left) / rect.width, 0, 1);
     var y = clamp((ev.clientY - rect.top) / rect.height, 0, 1);
-    fetch("/select", {
+    // in strike mode a click selects a ground VEHICLE; otherwise it locks a drone
+    var url = (document.getElementById("strikeChk") && document.getElementById("strikeChk").checked)
+              ? "/strike_select" : "/select";
+    fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ x: x, y: y })
@@ -560,6 +576,15 @@
       body: JSON.stringify({ jammed: this.checked }) })
       .then(function (r) { markOffline(!r.ok); }).catch(function () { markOffline(true); });
   });
+
+  // ---- vehicle strike mode ----
+  document.getElementById("strikeChk").addEventListener("change", function () {
+    fetch("/set_strike_mode", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: this.checked }) })
+      .then(function (r) { markOffline(!r.ok); }).catch(function () { markOffline(true); });
+  });
+  document.getElementById("btnStrike").addEventListener("click", function () { postAction("/strike"); });
+  document.getElementById("btnAbort").addEventListener("click", function () { postAction("/abort_strike"); });
 })();
 </script>
 </body>

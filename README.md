@@ -37,6 +37,7 @@ fallback, all driven from a browser **Web UI**.
 | Obstacle avoidance | 0 false triggers in open air, does not brake for the (small) target |
 | **VIO drift (GPS jammed 22 s / 38 m)** | **98% VO success, ~4.5 m drift** (bounded, not divergence) |
 | **GPS-jammed tracking** | **9/11 frames tracked over ~30 s**, gap held 9–16 m, centered |
+| **GPS-denied waypoint nav** (VIO only, ~56 m square) | reaches every waypoint; **mean error 4.4 m** with magnetometer yaw-aid (20.6 m / diverges without it) |
 
 ---
 
@@ -91,6 +92,7 @@ Full reference: [docs/WEBUI.md](docs/WEBUI.md).
 | [docs/GUIDANCE.md](docs/GUIDANCE.md) | Standoff follow law, steadiness, obstacle avoidance, camera mode, scenario tester + results. |
 | [docs/VIO.md](docs/VIO.md) | GPS-denied self-localization: RGB-D + IMU VIO, dual-mode, body-frame visual servo, drift results. |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | Papers + **reuse-vs-build** decisions (tracking / VIO / avoidance). |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | **Real-world deployment roadmap**: sim-vs-real, hardware BOM, reuse (VINS/OpenVINS → PX4 EKF2), integration, phased plan + effort. |
 | [docs/WEBUI.md](docs/WEBUI.md) | Web UI: controls, telemetry, overlays, HTTP API. |
 | [docs/DATASET_AND_TRAINING.md](docs/DATASET_AND_TRAINING.md) | AirSim auto-labeled dataset + YOLO26-seg training. |
 | [docs/GOTCHAS.md](docs/GOTCHAS.md) | Troubleshooting & hard-won lessons. |

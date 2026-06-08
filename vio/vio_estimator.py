@@ -79,6 +79,40 @@ def yaw_of(q):
     return math.atan2(R[1, 0], R[0, 0])
 
 
+def _wrap(a):
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+def rpy_of(q):
+    """roll, pitch, yaw (rad) from a body->world quaternion (NED ZYX)."""
+    R = quat_to_R(q)
+    roll = math.atan2(R[2, 1], R[2, 2])
+    pitch = -math.asin(max(-1.0, min(1.0, R[2, 0])))
+    yaw = math.atan2(R[1, 0], R[0, 0])
+    return roll, pitch, yaw
+
+
+def euler_to_quat(roll, pitch, yaw):
+    """(roll,pitch,yaw) rad -> (x,y,z,w) body->world quaternion."""
+    cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+    cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+    cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+    return np.array([sr * cp * cy - cr * sp * sy,
+                     cr * sp * cy + sr * cp * sy,
+                     cr * cp * sy - sr * sp * cy,
+                     cr * cp * cy + sr * sp * sy])
+
+
+def mag_heading(mag_body, roll, pitch):
+    """Tilt-compensated magnetic heading (rad) from a body-frame magnetometer vector."""
+    mx, my, mz = float(mag_body[0]), float(mag_body[1]), float(mag_body[2])
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    mxh = mx * cp + mz * sp
+    myh = mx * sr * sp + my * cr - mz * sr * cp
+    return math.atan2(-myh, mxh)
+
+
 # ----------------------------------------------------------------- rigid 3D-3D (Umeyama + RANSAC)
 def umeyama(P, Q):
     """Least-squares rigid R,t with q_i ~= R p_i + t (no scale). Returns (R, t)."""
@@ -128,6 +162,7 @@ class VIOEstimator:
         # direct odometry (Steinbrücker/Park) if installed. Falls back to umeyama if open3d missing.
         self.backend = backend if (backend != "open3d" or _HAS_O3D) else "umeyama"
         self._o3d_intr = None
+        self._o3d_init = np.eye(4)            # odo_init seed (IMU-predicted relative pose; identity default)
         if self.backend == "open3d":
             self._o3d_intr = _o3d.camera.PinholeCameraIntrinsic(
                 int(width), int(height), self.fx, self.fy, self.cx, self.cy)
@@ -140,12 +175,26 @@ class VIOEstimator:
         self.last_vo_ok = False
         self.coast = 0                                # consecutive VO-failure frames
         self.rng = np.random.default_rng(0)
+        self.mag_offset = None                        # calibrated (true_yaw - raw_mag_heading) at anchor
 
     # ---- anchoring (called while GPS is available) ----
     def anchor(self, pos, quat):
         self.p = np.asarray(pos, float).copy()
         self.q = quat_norm(np.asarray(quat, float))
         self.v[:] = 0.0
+
+    def calibrate_mag(self, mag_body):
+        """Calibrate the compass offset against the (truth-anchored) attitude — call while GPS is on."""
+        r, p, y = rpy_of(self.q)
+        self.mag_offset = _wrap(y - mag_heading(mag_body, r, p))
+
+    def _apply_mag(self, mag_body, k=0.06):
+        """Correct yaw toward the magnetometer heading (bounds gyro yaw drift). roll/pitch untouched."""
+        if self.mag_offset is None:
+            return
+        r, p, y = rpy_of(self.q)
+        mag_y = _wrap(mag_heading(mag_body, r, p) + self.mag_offset)
+        self.q = quat_norm(euler_to_quat(r, p, y + k * _wrap(mag_y - y)))
 
     def _backproject(self, pts, depth):
         """pts (N,2) pixel -> (valid_mask, P (M,3) camera-frame 3D)."""
@@ -167,10 +216,13 @@ class VIOEstimator:
                 _o3d.geometry.Image(np.ascontiguousarray(d.astype(np.float32))),
                 depth_scale=1.0, depth_trunc=self.max_depth, convert_rgb_to_intensity=True)
             src = mk(self.prev_gray, self.prev_depth); tgt = mk(gray, depth)
+            opt = _o3d.pipelines.odometry.OdometryOption()
+            opt.depth_min = 0.3
+            opt.depth_max = self.max_depth          # default 4 m rejects everything a drone sees -> 0% conv
+            opt.depth_diff_max = 0.07               # default 0.03 too tight for sim depth
             ok, T, _info = _o3d.pipelines.odometry.compute_rgbd_odometry(
-                src, tgt, self._o3d_intr, np.eye(4),
-                _o3d.pipelines.odometry.RGBDOdometryJacobianFromHybridTerm(),
-                _o3d.pipelines.odometry.OdometryOption())
+                src, tgt, self._o3d_intr, self._o3d_init,
+                _o3d.pipelines.odometry.RGBDOdometryJacobianFromHybridTerm(), opt)
             if not ok:
                 return None
             R = np.asarray(T)[:3, :3]; t = np.asarray(T)[:3, 3]
@@ -178,17 +230,21 @@ class VIOEstimator:
         except Exception:
             return None
 
-    def update(self, gray, depth, imu, dt):
-        """Advance the estimate one frame. imu = (accel_body(3), gyro_body(3)). Returns pose dict.
+    def update(self, gray, depth, imu, dt, mag=None):
+        """Advance the estimate one frame. imu = (accel_body(3), gyro_body(3)); mag = body magnetometer
+        vector (3) or None. Returns pose dict.
 
         While GPS is available the caller should still run this (to keep features warm) and then call
-        anchor(); while jammed, the returned p/q is the dead-reckoned estimate.
+        anchor(); while jammed, the returned p/q is the dead-reckoned estimate. The magnetometer (when
+        provided + calibrated) bounds yaw drift.
         """
         dt = float(max(1e-3, min(0.3, dt)))
-        # ---- IMU: propagate attitude from gyro ----
+        # ---- IMU: propagate attitude from gyro, then correct yaw with the magnetometer ----
         if imu is not None:
             accel = np.asarray(imu[0], float); gyro = np.asarray(imu[1], float)
             self.q = quat_norm(quat_mul(self.q, quat_from_gyro(gyro, dt)))
+            if mag is not None:
+                self._apply_mag(mag)
         else:
             accel = None
         R_wb = quat_to_R(self.q)
@@ -219,14 +275,22 @@ class VIOEstimator:
                         if R is not None:
                             disp_cam = -R.T @ t      # camera displacement in prev-cam frame
                             vo_disp_world = R_wc @ disp_cam
-        # ---- integrate translation ----
-        if vo_disp_world is not None and np.all(np.isfinite(vo_disp_world)) \
-                and np.linalg.norm(vo_disp_world) < 5.0:        # reject blunders (>5 m/frame)
+        # ---- REJECT-AND-COAST GATE: accept the VO step only if it is finite, within a plausible
+        #      per-frame speed, AND consistent with the smooth predicted motion. One bad (sky / low
+        #      texture) frame otherwise corrupts the whole trajectory -> this is what bounds the drift.
+        gate_ok = False
+        if vo_disp_world is not None and np.all(np.isfinite(vo_disp_world)):
+            implied_speed = float(np.linalg.norm(vo_disp_world)) / dt
+            predicted = self.v * dt                              # where the smooth motion expects us
+            dev = float(np.linalg.norm(vo_disp_world - predicted))
+            gate = max(1.5, 2.5 * float(np.linalg.norm(self.v)) * dt)
+            gate_ok = implied_speed < 12.0 and dev < gate
+        if gate_ok:
             self.p = self.p + vo_disp_world
             self.v = 0.6 * self.v + 0.4 * (vo_disp_world / dt)  # smoothed velocity estimate
             self.last_vo_ok = True; self.coast = 0
         else:
-            # VO failed -> coast on IMU accel (gravity-compensated), short horizon only
+            # VO rejected/failed -> coast on IMU accel (gravity-compensated), short horizon only
             self.last_vo_ok = False; self.coast += 1
             if accel is not None and self.coast < 12:
                 a_world = R_wb @ accel + G_NED

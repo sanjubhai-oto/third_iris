@@ -31,6 +31,8 @@ from trajectories import TRAJECTORIES                      # noqa: E402
 from smooth_control import ImageKalman, deadband, ema       # noqa: E402
 from guidance import Vec3KF, target_from_vision, standoff_command, vfov_from_hfov  # noqa: E402
 from avoidance import apply_avoidance, clearance_and_escape    # noqa: E402
+from range_filter import RangeFilter                           # noqa: E402
+from strike import intercept_command                            # noqa: E402
 sys.path.insert(0, str(REPO / "vio"))
 from vio_estimator import VIOEstimator                         # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -49,7 +51,9 @@ G = {"jpeg": None, "tel": {"state": "INIT"}, "gap": 12.0, "mode": "fused", "spee
      "video": {"proto": "airsim", "endpoint": ""},
      "telem_src": {"proto": "airsim", "endpoint": ""},
      "avoid": True,                # depth-based obstacle avoidance (needs AirSim depth)
-     "jammed": False}              # GPS jammed -> navigate on VIO (camera+IMU) instead of GPS
+     "jammed": False,              # GPS jammed -> navigate on VIO (camera+IMU) instead of GPS
+     # ground-vehicle strike (simulated intercept onto a selected car)
+     "strike_mode": False, "strike_click": None, "strike_armed": False, "abort_strike": False}
 # guidance modes: location | vision | fused | vision_after_arrival
 # video protocols: airsim | rtsp | udp | http | device | file
 # telemetry protocols: airsim | mavlink_udp | mavlink_serial
@@ -103,6 +107,66 @@ def imu_of(ac):
     return a, w
 
 
+CAR_POSES = [(0.0, -34.0, 0.3), (26.0, -28.0, 1.2), (-26.0, -28.0, -0.8)]  # world N,E + yaw (ground z=0);
+#            flight-verified CLEAR + far enough (~34-38 m) to be in the FPV frame from 18 m altitude
+
+
+def spawn_cars(ac):
+    """Spawn SUV ground targets (idempotent). Returns the list of object names that exist."""
+    names = []
+    for i, (x, y, yw) in enumerate(CAR_POSES):
+        nm = f"targetcar_{i}"
+        try:
+            q = airsim.Quaternionr(0, 0, math.sin(yw / 2), math.cos(yw / 2))
+            ac.simSpawnObject(nm, "SuvCarPawn", airsim.Pose(airsim.Vector3r(x, y, 0.0), q),
+                              airsim.Vector3r(1, 1, 1), False, False)
+        except Exception:
+            pass
+        names.append(nm)
+    return names
+
+
+def car_world(ac, name):
+    """World-NED position of a spawned car. The cars are STATIC (physics off), so the known spawn
+    position is exact — no simGetObjectPose needed (that RPC is broken in this build)."""
+    try:
+        i = int(str(name).split("_")[1])
+        if 0 <= i < len(CAR_POSES):
+            x, y, _ = CAR_POSES[i]
+            return np.array([x, y, 0.0])
+    except Exception:
+        pass
+    return None
+
+
+def project_cars(ac, car_names, ego, ego_yaw, W, H):
+    """Project known car world positions into the FPV image -> synthetic 'detections' (no detector
+    needed since we spawned them; the real-world equivalent is a COCO vehicle detector). Returns dicts
+    with image box, range, and the true world position."""
+    fx = W / 2.0; cxI = W / 2.0; cyI = H / 2.0
+    cy_, sy_ = math.cos(ego_yaw), math.sin(ego_yaw)
+    out = []
+    for nm in car_names:
+        C = car_world(ac, nm)
+        if C is None:
+            continue
+        dn, de, dd = C[0] - ego[0], C[1] - ego[1], C[2] - ego[2]
+        fwd = dn * cy_ + de * sy_           # camera-forward (body x at FPV yaw)
+        if fwd < 1.0:
+            continue                        # behind / too close to project
+        right = -dn * sy_ + de * cy_
+        u = cxI + fx * right / fwd
+        vv = cyI + fx * dd / fwd
+        if not (0 <= u < W and 0 <= vv < H):
+            continue                        # out of frame
+        rng = float(math.sqrt(dn*dn + de*de + dd*dd))
+        bw = max(12.0, fx * 4.5 / fwd)      # SUV ~4.5 m wide -> apparent px size
+        bh = max(8.0, fx * 1.8 / fwd)
+        out.append({"name": nm, "box": (u-bw/2, vv-bh/2, u+bw/2, vv+bh/2),
+                    "cx": u, "cy": vv, "depth": fwd, "range": rng, "wp": C})
+    return out
+
+
 def is_real(depth, x1, y1, x2, y2, W, H):
     if depth is None:
         return True, None
@@ -133,6 +197,7 @@ def tracking_loop():
         ac.enableApiControl(True, v); ac.armDisarm(True, v)
     ac.takeoffAsync(vehicle_name="Target").join(); ac.takeoffAsync(vehicle_name="Ego").join()
     ac.moveToZAsync(-18, 3, vehicle_name="Target").join(); ac.moveToZAsync(-18, 3, vehicle_name="Ego").join()
+    car_names = spawn_cars(ac)              # place SUV ground targets for the strike feature
 
     def new_traj():
         name = rng.choice(list(TRAJECTORIES.keys()))
@@ -148,6 +213,9 @@ def tracking_loop():
     kf = ImageKalman(q=2.5, r=0.05)
     tkf = Vec3KF()                        # 3-D target position+velocity estimator (world NED)
     vio = None                            # VIO estimator (lazy-init once image size known)
+    rf = None                             # robust range filter (lazy-init once image size known)
+    strike_tkf = Vec3KF(q=2.0, r=0.5)     # target estimator for the strike intercept
+    strike_box = None; strike_msg = "--"; strike_car = None  # selected target box / status / car name
     state = "DETECT"; locked_id = None; lost = 0; miss = 0; shadows = 0; i_yaw = 0.0
     prev_cmd = None; A_MAX = 2.4           # ego accel limit -> steady (low-tilt) camera platform
     prev_yaw = None; YAW_SLEW = 65.0       # yaw setpoint slew limit (deg/s) -> balanced smooth/keep-up
@@ -218,6 +286,12 @@ def tracking_loop():
         real_dets = [d for d in dets if d["real"]]
         vis_hist.append(1 if real_dets else 0)
 
+        # ---- ground-vehicle "detection" for the strike feature: project the known spawned cars into
+        #      the image (offline; the real-world equivalent is a COCO vehicle detector) ----
+        vehicles = []
+        if (G["strike_mode"] or state == "STRIKE") and v["proto"] == "airsim":
+            vehicles = project_cars(ac, car_names, ego, ego_yaw, W, H)
+
         # ---- handle UI commands ----
         if G["clear"]:
             G["clear"] = False; locked_id = None; state = "DETECT"; kf.reset(); tkf.reset(); trail.clear()
@@ -229,14 +303,83 @@ def tracking_loop():
             cand = inside or real_dets
             if cand:
                 sel = min(cand, key=lambda d: (d["cx"]-px)**2 + (d["cy"]-py)**2)
-                locked_id = sel["id"]; state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None; kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
+                locked_id = sel["id"]; state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None
+                kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
+                if rf is not None:
+                    rf.reset()
+
+        # ---- STRIKE: select a vehicle target, arm/abort ----
+        sclick = G["strike_click"]
+        if sclick is not None:
+            G["strike_click"] = None
+            px, py = sclick[0] * W, sclick[1] * H
+            cand = [d for d in vehicles if d["wp"] is not None]
+            if cand:
+                sel = min(cand, key=lambda d: (d["cx"]-px)**2 + (d["cy"]-py)**2)
+                strike_box = sel["box"]; strike_car = sel["name"]
+                strike_tkf.reset(); strike_tkf.update(np.asarray(sel["wp"], float), dt)
+                strike_msg = "target selected — press STRIKE"
+        if G["abort_strike"]:
+            G["abort_strike"] = False; G["strike_armed"] = False
+            if state == "STRIKE":
+                state = "DETECT"; strike_msg = "aborted"
+        if G["strike_armed"] and strike_box is not None and state != "STRIKE":
+            state = "STRIKE"; strike_msg = "ENGAGING"; prev_cmd = None
 
         gap = float(G["gap"])
         conf = 0.0; range_m = None; cur_det = None; clearance_m = None; avoiding = False
         vn = ve = vd = 0.0; yaw_sp = ego_yaw; yr_deg = 0.0
         source = "--"; reached = False
 
-        if state == "TRACK":
+        if state == "STRIKE":
+            # ===== TERMINAL-GUIDANCE INTERCEPT onto the selected ground vehicle (sim strike) =====
+            # home onto the selected car's TRUE world position with pursuit/PIP/PN guidance until impact.
+            cw = car_world(ac, strike_car) if strike_car else None
+            if cw is not None:
+                tp, tv = strike_tkf.update(cw, dt)
+            else:
+                tp, tv = strike_tkf.predict_only(dt)
+            cur_v = next((d for d in vehicles if d["name"] == strike_car), None)
+            if cur_v is not None:
+                strike_box = cur_v["box"]                       # keep the on-screen marker on the car
+            ek = ac.getMultirotorState(vehicle_name="Ego").kinematics_estimated
+            ego_vel = np.array([ek.linear_velocity.x_val, ek.linear_velocity.y_val, ek.linear_velocity.z_val])
+            ci = ac.simGetCollisionInfo(vehicle_name="Ego")
+            hit_collision = ci.has_collided and "targetcar" in (ci.object_name or "").lower()
+            if tp is not None:
+                dxy = (tp[:2] - ego[:2]); horiz = float(np.hypot(dxy[0], dxy[1]))
+                range_m = float(np.linalg.norm(tp - ego))
+                CRUISE_Z = -22.0; v_max = float(G["speed"]) + 5.0
+                # THREE-PHASE strike: (1) run-in to ABOVE the target at high cruise alt WITH obstacle
+                # AVOIDANCE; (2) ALIGN precisely over the target (horiz<1.5 m) while holding altitude so
+                # the descent is in the target's CLEAR vertical column; (3) committed vertical DIVE.
+                if horiz > 1.5:
+                    sp = float(np.clip(0.8 * horiz, 1.5, v_max))         # decelerate as we close in
+                    hv = dxy / horiz * sp
+                    vz = float(np.clip(0.6 * (CRUISE_Z - ego[2]), -3.0, 3.0))  # climb to / hold cruise alt
+                    vcmd = np.array([hv[0], hv[1], vz])
+                    if horiz > 6.0 and depth is not None:                # AVOID obstacles during run-in
+                        (avn, ave, avd), clr, av = apply_avoidance(vcmd, depth, ego_yaw, v_max)
+                        vcmd = np.array([avn, ave, avd])
+                        if av:
+                            avoiding = True; clearance_m = clr
+                    phase = "run-in" if horiz > 6.0 else "align"
+                else:
+                    # DIVE: directly over the target's clear column -> snap xy + plunge straight down
+                    vxy = 2.0 * dxy - 1.0 * ego_vel[:2]
+                    vcmd = np.array([vxy[0], vxy[1], v_max]); phase = "DIVE"
+                yaw_to = math.degrees(math.atan2(tp[1]-ego[1], tp[0]-ego[0]))
+                ac.moveByVelocityAsync(float(vcmd[0]), float(vcmd[1]), float(vcmd[2]), 0.4,
+                                       yaw_mode=airsim.YawMode(False, yaw_to), vehicle_name="Ego")
+                if range_m < 3.0 or hit_collision:
+                    strike_msg = f"HIT {ci.object_name}" if hit_collision else "HIT (impact)"
+                    G["strike_armed"] = False; state = "DETECT"; ac.hoverAsync(vehicle_name="Ego")
+                else:
+                    strike_msg = f"{phase} range={range_m:.1f}m"
+                source = "strike"
+            else:
+                strike_msg = "target lost"; G["strike_armed"] = False; state = "DETECT"
+        elif state == "TRACK":
             # find the locked target among current detections (by track id, else nearest real det)
             match = [d for d in real_dets if d["id"] == locked_id]
             # keep vision active even if ByteTrack reassigns the id: fall back to the most-centered detection
@@ -245,16 +388,26 @@ def tracking_loop():
             mode = G["mode"]; sp = float(G["speed"])
             VFOV = vfov_from_hfov(HFOV, W, H)
             # ---- build a TARGET-POSITION measurement (world NED) from the chosen source ----
-            vis_meas = None
+            vis_meas = None; range_ok = False; range_robust = None
             if cur_det is not None:
                 conf = cur_det["conf"]; lost = 0
                 ex, ey = (cur_det["cx"] - cxI) / cxI, (cur_det["cy"] - cyI) / cyI
-                if cur_det["depth"] and cur_det["depth"] > 0.3:
-                    vis_meas = target_from_vision(ego_nav, yaw_nav, ex, ey, cur_det["depth"], HFOV, VFOV)
+                # ---- ROBUST RANGE: foreground depth + size cross-check + plausibility gate ----
+                if rf is None:
+                    rf = RangeFilter(fy=W / 2.0)        # fy = W/2 for HFOV 90 (square pixels)
+                bx = cur_det["box"]; h_px = bx[3] - bx[1]
+                if not jammed and depth is not None:     # GPS on + depth trustworthy -> learn size H
+                    rf.calibrate(rf.robust_depth(depth, bx), h_px)
+                range_robust, range_ok = rf.update(depth, bx, h_px, dt)
+                rng_for_vis = range_robust if (range_robust and range_robust > 0.3) else cur_det["depth"]
+                if rng_for_vis and rng_for_vis > 0.3:
+                    vis_meas = target_from_vision(ego_nav, yaw_nav, ex, ey, rng_for_vis, HFOV, VFOV)
                 kf.update(ex, ey, dt)
                 trail.append((int(cur_det["cx"]), int(cur_det["cy"])))
             else:
                 lost += 1
+                if rf is not None:
+                    rf.miss += 1
                 if lost > 150:
                     state = "DETECT"; locked_id = None; tkf.reset(); trail.clear()
             reached = rng_gps <= gap + 2.5
@@ -286,25 +439,27 @@ def tracking_loop():
                 tv = tv * max(0.0, 1.0 - 0.2 * miss)
             eff_sp = sp * (1.0 if meas is not None else max(0.25, 1.0 - 0.15 * miss))
             clearance_m = None; avoiding = False
-            if jammed and cur_det is not None and cur_det["depth"] and cur_det["depth"] > 0.3:
+            if jammed and cur_det is not None:
                 # ===== GPS-DENIED: pure BODY-FRAME visual servo (drift-immune) =====
-                # Uses ONLY the camera (depth range + image bearing), commanded in the body frame, so
-                # it needs no world position/heading -> immune to VIO drift. VIO still runs for absolute
-                # position awareness/telemetry, but the LOCK is held by vision alone.
-                range_m = float(cur_det["depth"])
+                # Uses ONLY the camera (robust range + image bearing), commanded in the body frame, so
+                # it needs no world position/heading -> immune to VIO drift. The LOCK is held by vision.
+                range_m = float(range_robust) if range_robust else gap
                 exj = (cur_det["cx"] - cxI) / cxI; eyj = (cur_det["cy"] - cyI) / cyI
-                fwd = float(np.clip(0.8 * (range_m - gap), -eff_sp, eff_sp))     # hold gap (fwd/back)
-                vz_b = float(np.clip(2.2 * eyj, -2.5, 2.5))                      # center vertically (climb/descend)
+                # FORWARD only when the range is trustworthy this frame; else FREEZE (loss-aware control
+                # -> the range channel is least reliable at loss, so a bad read can't surge us).
+                fwd = float(np.clip(0.8 * (range_m - gap), -eff_sp, eff_sp)) if range_ok else 0.0
+                vz_b = float(np.clip(2.2 * eyj, -2.5, 2.5))                      # center vertically
                 bearing = math.degrees(math.atan(exj * math.tan(math.radians(HFOV / 2))))
-                yr = float(np.clip(K_YR * bearing, -YR_MAX, YR_MAX))             # center horizontally (yaw rate)
+                yr = float(np.clip(K_YR * bearing, -YR_MAX, YR_MAX))             # center horizontally (yaw)
                 if G.get("avoid", True) and depth is not None:                   # forward brake on obstacle
                     ahead, sev, _ = clearance_and_escape(depth)
                     if sev > 0.0:
-                        fwd = (1.0 - sev) * fwd; avoiding = True
+                        fwd = min(fwd, (1.0 - sev) * fwd); avoiding = True
                         clearance_m = round(float(ahead), 1) if math.isfinite(ahead) else None
                 ac.moveByVelocityBodyFrameAsync(fwd, 0.0, vz_b, 0.6,
                                                 yaw_mode=airsim.YawMode(True, yr), vehicle_name="Ego")
-                yr_deg = yr; prev_yaw = None; prev_cmd = None; source = "vision(GPS-jammed)"
+                yr_deg = yr; prev_yaw = None; prev_cmd = None
+                source = "vision(GPS-jammed)" if range_ok else "vision(coast)"
             else:
                 # ===== GPS AVAILABLE: world-frame standoff (pos-P + velocity feed-forward) =====
                 vn, ve, vd, yaw_deg, range_m, yaw_err_deg = standoff_command(
@@ -314,7 +469,7 @@ def tracking_loop():
                     (vn, ve, vd), clearance_m, avoiding = apply_avoidance(
                         [vn, ve, vd], depth, yaw_nav, max(eff_sp, 2.0))
                     clearance_m = round(float(clearance_m), 1) if math.isfinite(clearance_m) else None
-                # acceleration-limit -> less tilt -> steady camera
+                # acceleration-limit the command -> less tilt -> steady camera
                 cmd = np.array([vn, ve, vd])
                 if prev_cmd is None:
                     prev_cmd = cmd
@@ -329,8 +484,14 @@ def tracking_loop():
                 ac.moveByVelocityAsync(float(cmd[0]), float(cmd[1]), float(cmd[2]), 0.6,
                                        yaw_mode=airsim.YawMode(False, float(prev_yaw)), vehicle_name="Ego")
                 yr_deg = yaw_err_deg
-        else:  # DETECT — GPS gently yaws (rate) the camera onto the target so operator can see & click
-            yerr = math.atan2(math.sin(az_gps - ego_yaw), math.cos(az_gps - ego_yaw))
+        else:  # DETECT — gently yaw the camera onto the target(s) so the operator can see & click
+            az_aim = az_gps
+            if G["strike_mode"]:                 # in strike mode, face the nearest ground vehicle
+                cw = [car_world(ac, n) for n in car_names]; cw = [c for c in cw if c is not None]
+                if cw:
+                    near = min(cw, key=lambda c: (c[0]-ego[0])**2 + (c[1]-ego[1])**2)
+                    az_aim = math.atan2(near[1] - ego[1], near[0] - ego[0])
+            yerr = math.atan2(math.sin(az_aim - ego_yaw), math.cos(az_aim - ego_yaw))
             yr_cmd = float(np.clip(K_YR * math.degrees(yerr), -YR_MAX, YR_MAX))
             ac.moveByVelocityAsync(0, 0, 0, 0.6,
                                    yaw_mode=airsim.YawMode(True, yr_cmd), vehicle_name="Ego")
@@ -349,6 +510,18 @@ def tracking_loop():
             else:
                 cv2.rectangle(ann, (x1, y1), (x2, y2), (255, 200, 0), 1)
                 cv2.putText(ann, f"id{d['id']} {d['conf']:.2f}", (x1, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,200,0), 1)
+        # vehicle (strike) detections + selected target
+        for d in vehicles:
+            x1, y1, x2, y2 = (int(v) for v in d["box"])
+            cv2.rectangle(ann, (x1, y1), (x2, y2), (0, 140, 255), 2)
+            cv2.putText(ann, f"car {d['range']:.0f}m", (x1, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,140,255), 1)
+        if strike_box is not None and (G["strike_mode"] or state == "STRIKE"):
+            x1, y1, x2, y2 = (int(v) for v in strike_box)
+            col = (0, 0, 255) if state == "STRIKE" else (0, 200, 255)
+            cv2.rectangle(ann, (x1, y1), (x2, y2), col, 3)
+            cv2.drawMarker(ann, ((x1+x2)//2, (y1+y2)//2), col, cv2.MARKER_TILTED_CROSS, 30, 2)
+            if state == "STRIKE":
+                cv2.putText(ann, strike_msg, (10, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
         cv2.drawMarker(ann, (int(cxI), int(cyI)), (255, 255, 255), cv2.MARKER_CROSS, 26, 2)
         if state == "TRACK" and cur_det is not None:
             cv2.line(ann, (int(cxI), int(cyI)), (int(cur_det["cx"]), int(cur_det["cy"])), (0, 255, 0), 1)
@@ -390,7 +563,9 @@ def tracking_loop():
                         "video_src": G["video"]["proto"], "telem_src": G["telem_src"]["proto"],
                         "avoid": bool(G.get("avoid", True)), "clearance_m": clearance_m, "avoiding": avoiding,
                         "camera": "FPV (body-fixed)", "nav_source": nav_source, "jammed": jammed,
-                        "vio_drift": vio_drift,
+                        "vio_drift": vio_drift, "strike_mode": bool(G["strike_mode"]),
+                        "strike_armed": bool(G["strike_armed"]), "strike_msg": strike_msg,
+                        "n_vehicles": len(vehicles),
                         "mav": ("--" if mav_snap is None else
                                 ("connected" if mav_snap.get("connected") else
                                  ("err: " + str(mav_snap.get("error"))[:30] if mav_snap.get("error") else "connecting…")))}
@@ -479,6 +654,29 @@ def set_avoid():
 @app.route("/set_jam", methods=["POST"])
 def set_jam():
     G["jammed"] = bool(request.get_json(force=True).get("jammed", False)); return ("", 204)
+
+
+@app.route("/set_strike_mode", methods=["POST"])
+def set_strike_mode():
+    G["strike_mode"] = bool(request.get_json(force=True).get("on", False))
+    if not G["strike_mode"]:
+        G["strike_armed"] = False
+    return ("", 204)
+
+
+@app.route("/strike_select", methods=["POST"])
+def strike_select():
+    d = request.get_json(force=True); G["strike_click"] = (float(d["x"]), float(d["y"])); return ("", 204)
+
+
+@app.route("/strike", methods=["POST"])
+def strike():
+    G["strike_armed"] = True; return ("", 204)
+
+
+@app.route("/abort_strike", methods=["POST"])
+def abort_strike():
+    G["abort_strike"] = True; return ("", 204)
 
 
 @app.route("/land", methods=["POST"])

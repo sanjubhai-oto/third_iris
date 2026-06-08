@@ -36,7 +36,7 @@ from guidance import (Vec3KF, target_from_vision, target_from_vision_cam, stando
                       vfov_from_hfov, look_at_angles, camera_rel_quat, euler_R, R_to_quat)
 
 MODEL = str(REPO / "runs/train/airsim_drone/weights/best.pt")
-TRACKER = str(REPO / "perception" / "trackers" / "bytetrack_uav.yaml")
+TRACKER = str(REPO / "perception" / "trackers" / "botsort_uav.yaml")  # BoT-SORT+ReID+GMC (matches webui)
 EGO_HOME = np.array([0.0, 0.0, 0.0])
 TARGET_HOME = np.array([8.0, 0.0, 0.0])
 HFOV = 90.0
