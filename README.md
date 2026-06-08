@@ -92,6 +92,7 @@ Full reference: [docs/WEBUI.md](docs/WEBUI.md).
 | [docs/GUIDANCE.md](docs/GUIDANCE.md) | Standoff follow law, steadiness, obstacle avoidance, camera mode, scenario tester + results. |
 | [docs/VIO.md](docs/VIO.md) | GPS-denied self-localization: RGB-D + IMU VIO, dual-mode, body-frame visual servo, drift results. |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | Papers + **reuse-vs-build** decisions (tracking / VIO / avoidance). |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | **Real-world deployment roadmap**: sim-vs-real, hardware BOM, reuse (VINS/OpenVINS → PX4 EKF2), integration, phased plan + effort. |
 | [docs/WEBUI.md](docs/WEBUI.md) | Web UI: controls, telemetry, overlays, HTTP API. |
 | [docs/DATASET_AND_TRAINING.md](docs/DATASET_AND_TRAINING.md) | AirSim auto-labeled dataset + YOLO26-seg training. |
 | [docs/GOTCHAS.md](docs/GOTCHAS.md) | Troubleshooting & hard-won lessons. |
