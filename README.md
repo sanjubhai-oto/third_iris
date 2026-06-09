@@ -46,6 +46,7 @@ fallback, all driven from a browser **Web UI**.
 ```powershell
 # 0. one-time env (Blackwell cu128 torch + ultralytics + flask + open3d)
 powershell -ExecutionPolicy Bypass -File env\setup_windows.ps1
+powershell -ExecutionPolicy Bypass -File env\install_airsim_settings.ps1
 
 # 1. launch AirSim (Blocks) and wait until it is running
 sim\airsim\Blocks\WindowsNoEditor\Blocks.exe

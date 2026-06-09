@@ -52,3 +52,8 @@ Thumbs.db
 # but always keep curated documentation images
 !docs/images/
 !docs/images/**
+
+# scratch / test outputs
+outputs/
+linkedin_assets/
+runs/videos_body_servo/

@@ -354,8 +354,14 @@ def tracking_loop():
                 # AVOIDANCE; (2) ALIGN precisely over the target (horiz<1.5 m) while holding altitude so
                 # the descent is in the target's CLEAR vertical column; (3) committed vertical DIVE.
                 if horiz > 1.5:
-                    sp = float(np.clip(0.8 * horiz, 1.5, v_max))         # decelerate as we close in
-                    hv = dxy / horiz * sp
+                    # PN/PIP/pursuit guidance supplies the horizontal run-in lead. The vertical channel
+                    # is handled by the strike phase schedule below so the vehicle first reaches the
+                    # target's clear column before committing to the dive.
+                    pn_v, _, _, _, _ = intercept_command(ego, ego_vel, tp, tv, v_max=v_max, v_min=1.5)
+                    hv = pn_v[:2]
+                    hs = float(np.linalg.norm(hv))
+                    if hs > v_max:
+                        hv = hv / hs * v_max
                     vz = float(np.clip(0.6 * (CRUISE_Z - ego[2]), -3.0, 3.0))  # climb to / hold cruise alt
                     vcmd = np.array([hv[0], hv[1], vz])
                     if horiz > 6.0 and depth is not None:                # AVOID obstacles during run-in

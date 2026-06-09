@@ -20,6 +20,16 @@ sure the **OneDrive** copy is the one with the `Ego` + `Target` vehicles, or Air
 the wrong (or default) vehicle config. Symptom: vehicle names from the scripts don't exist and the
 RPC hard-crashes (see below).
 
+Install the checked-in SimpleFlight config with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File env\install_airsim_settings.ps1
+```
+
+That writes `Ego` and `Target` with a `front_center` camera exposing `Scene` and `DepthPlanar` at
+1280x720, FOV 90. The spawn offsets must stay aligned with `EGO_HOME=(0,0,0)` and
+`TARGET_HOME=(8,0,0)` in the Python code.
+
 ### Never `simSetVehiclePose`/`reset` the Ego — it corrupts the segmentation buffer
 Moving the Ego with `simSetVehiclePose`, or calling `reset()`, **corrupts AirSim's segmentation
 buffer** — the seg image comes back black/garbage, which silently ruins dataset generation. Keep the

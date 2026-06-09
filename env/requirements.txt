@@ -1,4 +1,4 @@
-# Phase 1 perception stack (cross-platform).
+# Runtime stack (cross-platform): perception, AirSim, Web UI, VIO, evaluation, telemetry.
 #
 # IMPORTANT (Blackwell / RTX 50-series): install PyTorch from the CUDA 12.8 index FIRST,
 # then this file. setup_windows.ps1 does this for you. Manual:
@@ -7,6 +7,7 @@
 # Ultralytics provides YOLO26 *and* the built-in ByteTrack/BoT-SORT trackers.
 ultralytics>=8.4.0          # YOLO26 + trackers (track mode, bytetrack.yaml)
 lap>=0.5.12                 # linear assignment — required by ByteTrack/BoT-SORT track mode
+cosysairsim>=3.2.0          # AirSim client that supports Python 3.12
 
 # Core CV / numerics
 numpy>=1.26
@@ -23,6 +24,14 @@ pandas>=2.0
 # Dataset download/convert helpers
 requests>=2.31
 scipy>=1.11
+
+# Web UI + real link receivers
+flask>=3.0
+pymavlink>=2.4.41
+
+# Optional but installed by default for the GPS-denied VIO experiments.
+# vio_estimator.py falls back to LK+Umeyama if Open3D is not importable.
+open3d>=0.18; python_version < "3.13"
 
 # Optional: SAM 2 auto-masking for segmentation labels (heavy; install on demand)
 #   pip install "git+https://github.com/facebookresearch/sam2.git"

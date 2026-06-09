@@ -1,4 +1,4 @@
-# Phase 1 Windows setup: venv + Blackwell-compatible PyTorch (cu128) + Ultralytics (YOLO26 + ByteTrack).
+# Windows setup: venv + Blackwell-compatible PyTorch (cu128) + UAV tracking runtime.
 # Usage:  powershell -ExecutionPolicy Bypass -File env\setup_windows.ps1
 $ErrorActionPreference = "Stop"
 
@@ -23,8 +23,8 @@ $VPY = "$RepoRoot\.venv\Scripts\python.exe"
 # 2. Upgrade pip
 & $VPY -m pip install --upgrade pip wheel setuptools
 
-# 3. Perception stack first (ultralytics will pull a CPU torch from PyPI — we override it next).
-Write-Host "Installing perception requirements..." -ForegroundColor Cyan
+# 3. Runtime stack first (ultralytics may pull a CPU torch from PyPI — we override it next).
+Write-Host "Installing project requirements..." -ForegroundColor Cyan
 & $VPY -m pip install -r "$RepoRoot\env\requirements.txt"
 
 # 4. PyTorch for Blackwell (RTX 50xx) — CUDA 12.8 wheels. MUST be last: force-reinstall so it

@@ -34,6 +34,7 @@ import sys
 sys.path.insert(0, str(REPO / "sim" / "airsim"))
 from guidance import (Vec3KF, target_from_vision, target_from_vision_cam, standoff_command,  # noqa: E402
                       vfov_from_hfov, look_at_angles, camera_rel_quat, euler_R, R_to_quat)
+from smooth_control import ImageKalman          # noqa: E402  image-space predictor (coast through dropouts)
 
 MODEL = str(REPO / "runs/train/airsim_drone/weights/best.pt")
 TRACKER = str(REPO / "perception" / "trackers" / "botsort_uav.yaml")  # BoT-SORT+ReID+GMC (matches webui)
@@ -149,7 +150,12 @@ def main():
                          "stays centered regardless of airframe tilt (FPV camera decoupled)")
     ap.add_argument("--gimbal-frame", choices=["world", "relative"], default="world",
                     help="how simSetCameraPose interprets the orientation (world vs vehicle-relative)")
+    ap.add_argument("--body-servo", action="store_true",
+                    help="in vision-only phases, use pure body-frame visual servo instead of "
+                         "world-frame standoff reconstruction")
     ap.add_argument("--out", default=str(REPO / "runs" / "videos"))
+    ap.add_argument("--imgsz", type=int, default=960, help="YOLO inference size for eval")
+    ap.add_argument("--conf", type=float, default=0.30, help="YOLO confidence threshold for eval")
     ap.add_argument("--op-alt", type=float, default=25.0,
                     help="operating altitude (m) for the tracking test — Blocks has structures below "
                          "~20m, so we launch at 5m then climb here to fly in clear air")
@@ -206,7 +212,7 @@ def main():
         print("[gimbal] software-stabilized camera pointing ENABLED", flush=True)
 
     def detect(scene):
-        res = model.track(scene, tracker=TRACKER, persist=True, imgsz=960, conf=0.3, verbose=False)[0]
+        res = model.track(scene, tracker=TRACKER, persist=True, imgsz=args.imgsz, conf=args.conf, verbose=False)[0]
         out = []
         b = res.boxes
         if b is not None and len(b):
@@ -225,6 +231,9 @@ def main():
         A_MAX = 2.6                              # max ego accel (m/s^2) -> caps tilt ~atan(2.6/9.8)=15deg
         prev_yaw = None                          # for yaw setpoint slew limiting (smooth, low-rate yaw)
         YAW_SLEW = 80.0                          # max yaw setpoint change (deg/s) — smooth yet keeps up
+        imk = ImageKalman(q=2.0, r=0.05)         # image-space bearing predictor (coast through dropouts)
+        last_range = float(args.gap)             # hold last good range during a dropout
+        COAST_MAX = 6                            # frames to keep panning on prediction before declaring lost
         while time.time() - t0 < secs:
             now = time.time(); dt = min(0.3, max(0.02, now - last)); last = now
             scene, depth = grab(ac)
@@ -266,18 +275,23 @@ def main():
                                        vehicle_name="Target")
 
             dets = detect(scene)
-            # pick the locked detection: nearest to last box, else nearest to center
+            # pick the locked detection: nearest to the PREDICTED image position (image-Kalman), else
+            # last box, else centre. With a single target there are no distractors, so always accept the
+            # nearest detection (a hard gate would reject the real target when the prediction drifts).
             cur = None
             if dets:
-                if locked_box is not None:
-                    lx, ly = locked_box
-                    cur = min(dets, key=lambda d: (d["cx"] - lx) ** 2 + (d["cy"] - ly) ** 2)
+                if imk.alive:
+                    pe = imk.lead(0.0)               # current predicted (ex, ey)
+                    px, py = cxI + pe[0] * cxI, cyI + pe[1] * cyI
+                elif locked_box is not None:
+                    px, py = locked_box
                 else:
-                    cur = min(dets, key=lambda d: (d["cx"] - cxI) ** 2 + (d["cy"] - cyI) ** 2)
+                    px, py = cxI, cyI
+                cur = min(dets, key=lambda d: (d["cx"] - px) ** 2 + (d["cy"] - py) ** 2)
                 locked_box = (cur["cx"], cur["cy"])
 
             # ---- target-position measurement ----
-            meas = None
+            meas = None; ex = ey = dval = None
             if cur is not None:
                 ex, ey = (cur["cx"] - cxI) / cxI, (cur["cy"] - cyI) / cyI
                 dval = depth_at(depth, cur["cx"], cur["cy"], W, H)
@@ -316,25 +330,63 @@ def main():
                     pass
             # slow down and stop coasting hard when the target is not currently seen
             eff_speed = args.speed * (1.0 if meas is not None else max(0.25, 1.0 - 0.15 * lost_n))
-            vn, ve, vd, yaw_deg, rng, yaw_err = standoff_command(
-                ego, ego_yaw, tp, tv, args.gap, eff_speed)
-            # EGO STEADINESS: acceleration-limit the velocity command so the multirotor doesn't
-            # pitch/roll hard (a body-fixed camera swings with tilt). Caps tilt to ~atan(A_MAX/g).
-            cmd = np.array([vn, ve, vd])
-            if prev_cmd is None:
+            if args.body_servo and vision_only:
+                # ===== ROBUST BODY-FRAME VISUAL SERVO with COAST-THROUGH-DROPOUT =====
+                # Detected -> update the image-Kalman and servo on its smoothed+lead estimate. Detector
+                # MISS -> keep panning on the prediction (constant-velocity) for up to COAST_MAX frames
+                # so a fast lateral target stays in frame and re-acquires, instead of leaving the view.
+                if cur is not None:
+                    imk.update(ex, ey, dt)
+                    ex_s, ey_s = float(ex), float(ey)                      # RAW measurement -> tight centering
+                    if dval and dval > 0.3:
+                        last_range = 0.5 * float(dval) + 0.5 * last_range   # smooth + hold the range
+                    coasting = False
+                else:
+                    pe = imk.coast(dt)                                      # no detection -> predict
+                    coasting = pe is not None
+                    if coasting:
+                        ex_s = float(pe[0] + imk.x[2] * 0.10)               # extrapolate slightly ahead
+                        ey_s = float(pe[1] + imk.x[3] * 0.10)               # to keep panning with the target
+                tracking = imk.alive and imk.miss <= COAST_MAX
+                if tracking:
+                    rng = last_range
+                    # forward holds the gap; eased off while coasting so a stale range can't surge us
+                    fwd = float(np.clip(0.8 * (rng - args.gap), -eff_speed, eff_speed)) * (0.4 if coasting else 1.0)
+                    vz_b = float(np.clip(2.2 * ey_s, -2.8, 2.8))
+                    bearing = math.degrees(math.atan(ex_s * math.tan(math.radians(HFOV / 2))))
+                    yaw_err = bearing
+                    yr = float(np.clip(2.2 * bearing, -60, 60))
+                    ac.moveByVelocityBodyFrameAsync(fwd, 0.0, vz_b, 0.4,
+                                                    yaw_mode=airsim.YawMode(True, yr), vehicle_name="Ego")
+                else:
+                    # truly lost -> stop translating, slow scan toward the last-seen side to re-find it
+                    rng = last_range; yaw_err = 0.0
+                    scan = 25.0 * (1.0 if (imk.x is not None and imk.x[0] >= 0) else -1.0)
+                    ac.moveByVelocityBodyFrameAsync(0.0, 0.0, 0.0, 0.4,
+                                                    yaw_mode=airsim.YawMode(True, scan), vehicle_name="Ego")
+                    if imk.miss > COAST_MAX * 3:
+                        imk.reset()
+                prev_cmd = None; prev_yaw = None
+            else:
+                vn, ve, vd, yaw_deg, rng, yaw_err = standoff_command(
+                    ego, ego_yaw, tp, tv, args.gap, eff_speed)
+                # EGO STEADINESS: acceleration-limit the velocity command so the multirotor doesn't
+                # pitch/roll hard (a body-fixed camera swings with tilt). Caps tilt to ~atan(A_MAX/g).
+                cmd = np.array([vn, ve, vd])
+                if prev_cmd is None:
+                    prev_cmd = cmd
+                cmd = prev_cmd + np.clip(cmd - prev_cmd, -A_MAX * dt, A_MAX * dt)
                 prev_cmd = cmd
-            cmd = prev_cmd + np.clip(cmd - prev_cmd, -A_MAX * dt, A_MAX * dt)
-            prev_cmd = cmd
-            vn, ve, vd = float(cmd[0]), float(cmd[1]), float(cmd[2])
-            # slew-limit the yaw setpoint -> smooth, low-rate yaw (no snapping on random heading jumps)
-            if prev_yaw is None:
-                prev_yaw = yaw_deg
-            dyaw = math.degrees(math.atan2(math.sin(math.radians(yaw_deg - prev_yaw)),
-                                           math.cos(math.radians(yaw_deg - prev_yaw))))
-            yaw_cmd = prev_yaw + max(-YAW_SLEW * dt, min(YAW_SLEW * dt, dyaw))
-            prev_yaw = yaw_cmd
-            ac.moveByVelocityAsync(vn, ve, vd, 0.4,
-                                   yaw_mode=airsim.YawMode(False, float(yaw_cmd)), vehicle_name="Ego")
+                vn, ve, vd = float(cmd[0]), float(cmd[1]), float(cmd[2])
+                # slew-limit the yaw setpoint -> smooth, low-rate yaw (no snapping on random heading jumps)
+                if prev_yaw is None:
+                    prev_yaw = yaw_deg
+                dyaw = math.degrees(math.atan2(math.sin(math.radians(yaw_deg - prev_yaw)),
+                                               math.cos(math.radians(yaw_deg - prev_yaw))))
+                yaw_cmd = prev_yaw + max(-YAW_SLEW * dt, min(YAW_SLEW * dt, dyaw))
+                prev_yaw = yaw_cmd
+                ac.moveByVelocityAsync(vn, ve, vd, 0.4,
+                                       yaw_mode=airsim.YawMode(False, float(yaw_cmd)), vehicle_name="Ego")
 
             # ---- metrics (GPS truth for scoring only) + ego attitude/trajectory ----
             roll, pitch, eyaw = quat_rpy(ego_q)
@@ -440,6 +492,7 @@ def main():
         print(f"yaw-rate(deg/s): rms={rms(yaw_rate):.1f}  max|{np.abs(yaw_rate).max():.1f}|")
         try:
             cfile = Path(args.out) / "ego_trajectory.csv"
+            Path(args.out).mkdir(parents=True, exist_ok=True)
             with open(cfile, "w") as fh:
                 fh.write("t,pattern,ego_n,ego_e,ego_d,roll_deg,pitch_deg,yaw_deg,tgt_n,tgt_e,tgt_d\n")
                 for r in traj:

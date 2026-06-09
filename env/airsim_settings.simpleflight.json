@@ -1,0 +1,87 @@
+{
+  "SettingsVersion": 1.2,
+  "SimMode": "Multirotor",
+  "ViewMode": "SpringArmChase",
+  "CameraDefaults": {
+    "CaptureSettings": [
+      {
+        "ImageType": 0,
+        "Width": 1280,
+        "Height": 720,
+        "FOV_Degrees": 90
+      },
+      {
+        "ImageType": 1,
+        "Width": 1280,
+        "Height": 720,
+        "FOV_Degrees": 90
+      }
+    ]
+  },
+  "Vehicles": {
+    "Ego": {
+      "VehicleType": "SimpleFlight",
+      "AutoCreate": true,
+      "X": 0,
+      "Y": 0,
+      "Z": 0,
+      "Yaw": 0,
+      "Cameras": {
+        "front_center": {
+          "X": 0.5,
+          "Y": 0,
+          "Z": 0.1,
+          "Pitch": 0,
+          "Roll": 0,
+          "Yaw": 0,
+          "CaptureSettings": [
+            {
+              "ImageType": 0,
+              "Width": 1280,
+              "Height": 720,
+              "FOV_Degrees": 90
+            },
+            {
+              "ImageType": 1,
+              "Width": 1280,
+              "Height": 720,
+              "FOV_Degrees": 90
+            }
+          ]
+        }
+      }
+    },
+    "Target": {
+      "VehicleType": "SimpleFlight",
+      "AutoCreate": true,
+      "X": 8,
+      "Y": 0,
+      "Z": 0,
+      "Yaw": 0,
+      "Cameras": {
+        "front_center": {
+          "X": 0.5,
+          "Y": 0,
+          "Z": 0.1,
+          "Pitch": 0,
+          "Roll": 0,
+          "Yaw": 0,
+          "CaptureSettings": [
+            {
+              "ImageType": 0,
+              "Width": 1280,
+              "Height": 720,
+              "FOV_Degrees": 90
+            },
+            {
+              "ImageType": 1,
+              "Width": 1280,
+              "Height": 720,
+              "FOV_Degrees": 90
+            }
+          ]
+        }
+      }
+    }
+  }
+}
