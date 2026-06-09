@@ -32,6 +32,7 @@ datasets/raw/
 datasets/yolo/
 datasets/airsim_drone/images/
 datasets/airsim_drone/labels/
+datasets/realworld/        # real datasets (mjolnir/shahed, ~56k imgs) — fetch via fetch_realworld.py
 checkpoints/
 
 # logs / scratch
