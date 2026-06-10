@@ -10,6 +10,11 @@
     --ink: #0d1321;
     --muted: #5c6470;
     --accent: #0a84ff;
+    --teal: #18a999;
+    --orange: #ff9f1c;
+    --purple: #7c4dff;
+    --red: #e63946;
+    --green: #2a9d8f;
     --paper: #f6f7f9;
   }
   * { box-sizing: border-box; }
@@ -23,13 +28,18 @@
     background: linear-gradient(135deg, #0d1321 0%, #1d2d44 60%, #274060 100%);
     color: #fff;
     padding: 56px 48px 48px;
+    position: relative;
+    overflow: hidden;
   }
-  header.hero h1 { margin: 0 0 8px; font-size: 40px; letter-spacing: 1px; }
-  header.hero p  { margin: 0; font-size: 18px; color: #c9d4e3; max-width: 880px; }
+  header.hero h1 { margin: 0 0 8px; font-size: 42px; letter-spacing: 1px; position: relative; }
+  header.hero p  { margin: 0; font-size: 18px; color: #c9d4e3; max-width: 880px; position: relative; }
   header.hero .tag {
     display: inline-block; margin-bottom: 18px; padding: 4px 14px;
     border: 1px solid #4d648d; border-radius: 999px;
-    font-size: 12px; letter-spacing: 2px; color: #9fb3d1;
+    font-size: 12px; letter-spacing: 2px; color: #9fb3d1; position: relative;
+  }
+  header.hero .scan {
+    position: absolute; inset: 0; opacity: .5;
   }
   section.block {
     max-width: 1180px; margin: 36px auto; padding: 0 24px;
@@ -38,34 +48,82 @@
   section.block .card {
     background: #fff; border-radius: 14px;
     box-shadow: 0 2px 14px rgba(13,19,33,.07);
-    padding: 28px 28px 12px;
+    padding: 28px 28px 18px;
   }
   section.block h2 { margin: 0 0 4px; font-size: 24px; }
-  section.block .sub { margin: 0 0 18px; color: var(--muted); font-size: 14.5px; }
+  section.block .sub { margin: 0 0 14px; color: var(--muted); font-size: 14.5px; }
   section.block .num {
     color: var(--accent); font-weight: 700; font-size: 13px; letter-spacing: 2px;
   }
+  .explain {
+    margin: 14px 0 4px; padding: 12px 16px;
+    background: #f2f6fc; border-left: 3px solid var(--accent); border-radius: 6px;
+    font-size: 14px; color: #2b3442; line-height: 1.55;
+  }
+  .explain b { color: var(--ink); }
   .canvas { width: 100%; }
+  .canvas svg { width: 100% !important; height: auto !important; display: block; }
+  .figure svg { width: 100%; height: auto; display: block; }
   .vs-heads {
     display: flex; justify-content: space-between;
     padding: 6px 10%; font-weight: 700; font-size: 15px; letter-spacing: 1.5px;
   }
   .vs-heads span:first-child { color: #5c6470; }
   .vs-heads span:last-child  { color: var(--accent); }
-  .canvas svg { width: 100% !important; height: auto !important; display: block; }
   footer {
     text-align: center; color: var(--muted); font-size: 12.5px; padding: 28px 0 40px;
+  }
+  /* SVG figure typography */
+  .figure text { font-family: "Segoe UI", system-ui, sans-serif; }
+  .boxTitle { font-size: 17px; font-weight: 700; fill: #0d1321; }
+  .boxSub   { font-size: 12.5px; fill: #5c6470; }
+  .lane     { font-size: 14px; font-weight: 700; letter-spacing: 2.5px; }
+  .anno     { font-size: 13.5px; fill: #2b3442; }
+  .annoB    { font-size: 13.5px; font-weight: 700; fill: #0d1321; }
+  .axis     { font-size: 12px; fill: #76808c; }
+  /* drawn-curve animation */
+  .draw {
+    stroke-dasharray: 1; stroke-dashoffset: 1;
+    animation: drawline 7s ease-in-out infinite;
+  }
+  @keyframes drawline {
+    0% { stroke-dashoffset: 1; }
+    45% { stroke-dashoffset: 0; }
+    85% { stroke-dashoffset: 0; opacity: 1; }
+    97% { opacity: var(--vis, 1); }
+    100% { stroke-dashoffset: 1; opacity: var(--vis, 1); }
   }
   @media print {
     body { background: #fff; }
     section.block .card { box-shadow: none; border: 1px solid #e3e6ea; }
     header.hero { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .figure *, .canvas * { animation: none !important; }
   }
 </style>
 </head>
 <body>
 
 <header class="hero">
+  <svg class="scan" viewBox="0 0 1200 260" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="ping" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#4da3ff" stop-opacity=".5"/>
+        <stop offset="100%" stop-color="#4da3ff" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <!-- sweeping radar lines -->
+    <g stroke="#3d5a86" stroke-width="1" opacity=".5">
+      <circle cx="980" cy="60" r="40" fill="none"/>
+      <circle cx="980" cy="60" r="80" fill="none"/>
+      <circle cx="980" cy="60" r="120" fill="none"/>
+    </g>
+    <line x1="980" y1="60" x2="980" y2="-60" stroke="#5fa0ff" stroke-width="2">
+      <animateTransform attributeName="transform" type="rotate" from="0 980 60" to="360 980 60" dur="6s" repeatCount="indefinite"/>
+    </line>
+    <circle cx="1060" cy="40" r="6" fill="url(#ping)">
+      <animate attributeName="r" values="3;14;3" dur="2.4s" repeatCount="indefinite"/>
+    </circle>
+  </svg>
   <div class="tag">PITCH &nbsp;·&nbsp; TECHNICAL OVERVIEW</div>
   <h1>THIRD IRIS</h1>
   <p>Autonomous air-to-air pursuit when GPS is gone. One camera feeds two minds —
@@ -73,36 +131,351 @@
      that keeps the aircraft localized. Every claim below is a measured sim result, not a promise.</p>
 </header>
 
+<!-- ============ 01 PIPELINE (AntV) ============ -->
 <section class="block">
   <div class="card">
     <div class="num">01</div>
     <h2>The Pursuit Pipeline</h2>
     <p class="sub">Five stages, one 10 Hz onboard loop. No GPS anywhere in this chain.</p>
     <div id="ig-pipeline" class="canvas"></div>
+    <p class="explain"><b>Why it matters:</b> every box is a replaceable module with a proven
+      open-source core — YOLO26 for detection, ByteTrack for association, classic Kalman filtering
+      for prediction. The work is integration and tuning, not research risk.</p>
   </div>
 </section>
 
+<!-- ============ 02 TWO MINDS (custom animated) ============ -->
 <section class="block">
   <div class="card">
     <div class="num">02</div>
     <h2>One Camera, Two Minds</h2>
-    <p class="sub">Every frame is consumed twice: tracking locks the target; VIO keeps self-position when GPS is jammed. EKF2 fuses vision pose so the autopilot never notices the jam.</p>
-    <div id="ig-architecture" class="canvas"></div>
+    <p class="sub">Watch the frames flow: every image is consumed twice, by two independent pipelines, at the same instant.</p>
+    <div class="figure">
+    <svg viewBox="0 0 1200 600" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#9aa6b4"/>
+        </marker>
+        <marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#0a84ff"/>
+        </marker>
+        <marker id="arrG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#2a9d8f"/>
+        </marker>
+      </defs>
+
+      <!-- lane banners -->
+      <rect x="240" y="30" width="920" height="34" rx="17" fill="#0a84ff10"/>
+      <text x="700" y="52" text-anchor="middle" class="lane" fill="#0a84ff">TRACKING MIND — WHERE IS THE TARGET?</text>
+      <rect x="240" y="536" width="920" height="34" rx="17" fill="#2a9d8f12"/>
+      <text x="700" y="558" text-anchor="middle" class="lane" fill="#2a9d8f">LOCALIZATION MIND — WHERE AM I?</text>
+
+      <!-- flow paths (dots travel these) -->
+      <path id="flowTop" d="M175,295 C215,295 205,150 265,150 H1140" fill="none" stroke="#c6d4e4" stroke-width="2.5" marker-end="url(#arrB)"/>
+      <path id="flowBot" d="M175,305 C215,305 205,450 265,450 H1140" fill="none" stroke="#c8ddd9" stroke-width="2.5" marker-end="url(#arrG)"/>
+      <path id="flowImu" d="M175,392 C215,392 225,450 265,450" fill="none" stroke="#c8ddd9" stroke-width="2" stroke-dasharray="5 4"/>
+      <text x="218" y="212" class="anno" fill="#0a84ff" transform="rotate(-58 218 212)">every frame</text>
+      <text x="218" y="412" class="anno" fill="#2a9d8f" transform="rotate(58 218 388)">same frame</text>
+
+      <!-- GPS denied line -->
+      <path d="M175,505 H560 C600,505 610,492 622,490" fill="none" stroke="#e6394666" stroke-width="2" stroke-dasharray="6 5"/>
+      <g transform="translate(395,505)">
+        <line x1="-11" y1="-11" x2="11" y2="11" stroke="#e63946" stroke-width="4"/>
+        <line x1="-11" y1="11" x2="11" y2="-11" stroke="#e63946" stroke-width="4"/>
+      </g>
+      <text x="395" y="540" text-anchor="middle" class="annoB" fill="#e63946">signal denied — and it does not matter</text>
+
+      <!-- EKF2 aids servo (cross link) -->
+      <path d="M705,410 C705,330 880,300 935,225" fill="none" stroke="#7c4dff55" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arr)"/>
+      <text x="836" y="318" class="anno" fill="#7c4dff">velocity &amp; altitude aid</text>
+
+      <!-- frame pulses -->
+      <g>
+        <circle r="6" fill="#0a84ff"><animateMotion dur="4s" repeatCount="indefinite"><mpath href="#flowTop"/></animateMotion></circle>
+        <circle r="6" fill="#0a84ff" opacity=".75"><animateMotion dur="4s" begin="1.33s" repeatCount="indefinite"><mpath href="#flowTop"/></animateMotion></circle>
+        <circle r="6" fill="#0a84ff" opacity=".55"><animateMotion dur="4s" begin="2.66s" repeatCount="indefinite"><mpath href="#flowTop"/></animateMotion></circle>
+        <circle r="6" fill="#2a9d8f"><animateMotion dur="4s" repeatCount="indefinite"><mpath href="#flowBot"/></animateMotion></circle>
+        <circle r="6" fill="#2a9d8f" opacity=".75"><animateMotion dur="4s" begin="1.33s" repeatCount="indefinite"><mpath href="#flowBot"/></animateMotion></circle>
+        <circle r="6" fill="#2a9d8f" opacity=".55"><animateMotion dur="4s" begin="2.66s" repeatCount="indefinite"><mpath href="#flowBot"/></animateMotion></circle>
+        <circle r="4.5" fill="#f4a261"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#flowImu"/></animateMotion></circle>
+        <circle r="4.5" fill="#f4a261" opacity=".7"><animateMotion dur="1.6s" begin="0.8s" repeatCount="indefinite"><mpath href="#flowImu"/></animateMotion></circle>
+      </g>
+
+      <!-- sensor boxes -->
+      <g>
+        <rect x="40" y="260" width="135" height="74" rx="10" fill="#fff" stroke="#0d1321" stroke-width="2"/>
+        <text x="107" y="290" text-anchor="middle" class="boxTitle">CAMERA</text>
+        <text x="107" y="312" text-anchor="middle" class="boxSub">90° HFOV · RGB-D</text>
+
+        <rect x="40" y="362" width="135" height="58" rx="10" fill="#fff" stroke="#f4a261" stroke-width="2"/>
+        <text x="107" y="387" text-anchor="middle" class="boxTitle" style="font-size:15px">IMU</text>
+        <text x="107" y="406" text-anchor="middle" class="boxSub">gyro + accel, 200 Hz</text>
+
+        <rect x="40" y="476" width="135" height="58" rx="10" fill="#f3f4f6" stroke="#aab2bc" stroke-width="2" stroke-dasharray="6 4"/>
+        <text x="107" y="501" text-anchor="middle" class="boxTitle" style="font-size:15px;fill:#9aa3ad">GPS</text>
+        <text x="107" y="520" text-anchor="middle" class="boxSub" style="fill:#e63946;font-weight:700">JAMMED</text>
+      </g>
+
+      <!-- tracking lane boxes -->
+      <g>
+        <rect x="265" y="110" width="180" height="80" rx="10" fill="#fff" stroke="#0a84ff" stroke-width="2"/>
+        <text x="355" y="143" text-anchor="middle" class="boxTitle">DETECT</text>
+        <text x="355" y="164" text-anchor="middle" class="boxSub">YOLO26-seg · mAP50 0.97</text>
+
+        <rect x="490" y="110" width="180" height="80" rx="10" fill="#fff" stroke="#0a84ff" stroke-width="2"/>
+        <text x="580" y="143" text-anchor="middle" class="boxTitle">TRACK</text>
+        <text x="580" y="164" text-anchor="middle" class="boxSub">ByteTrack + Re-ID</text>
+
+        <rect x="715" y="110" width="180" height="80" rx="10" fill="#fff" stroke="#0a84ff" stroke-width="2"/>
+        <text x="805" y="143" text-anchor="middle" class="boxTitle">PREDICT</text>
+        <text x="805" y="164" text-anchor="middle" class="boxSub">image Kalman · lead &amp; coast</text>
+
+        <rect x="940" y="110" width="180" height="80" rx="10" fill="#0a84ff" stroke="#0a84ff" stroke-width="2"/>
+        <text x="1030" y="143" text-anchor="middle" class="boxTitle" fill="#fff" style="fill:#fff">SERVO</text>
+        <text x="1030" y="164" text-anchor="middle" class="boxSub" style="fill:#dceafe">body-frame cmds · 10 Hz</text>
+      </g>
+
+      <!-- localization lane boxes -->
+      <g>
+        <rect x="265" y="410" width="200" height="80" rx="10" fill="#fff" stroke="#2a9d8f" stroke-width="2"/>
+        <text x="365" y="443" text-anchor="middle" class="boxTitle">VIO</text>
+        <text x="365" y="464" text-anchor="middle" class="boxSub">feature flow + IMU fusion</text>
+
+        <rect x="620" y="410" width="170" height="80" rx="10" fill="#fff" stroke="#2a9d8f" stroke-width="2"/>
+        <text x="705" y="443" text-anchor="middle" class="boxTitle">EKF2</text>
+        <text x="705" y="464" text-anchor="middle" class="boxSub">vision-pose fusion</text>
+
+        <rect x="940" y="410" width="180" height="80" rx="10" fill="#2a9d8f" stroke="#2a9d8f" stroke-width="2"/>
+        <text x="1030" y="443" text-anchor="middle" class="boxTitle" style="fill:#fff">POSITION</text>
+        <text x="1030" y="464" text-anchor="middle" class="boxSub" style="fill:#d9f2ee">held with zero GPS</text>
+      </g>
+    </svg>
+    </div>
+    <p class="explain"><b>The trick:</b> when GPS dies, the chase does <b>not</b> switch to a
+      degraded mode. The servo loop (top) was never using GPS — it steers off pixel error in the
+      <b>body frame</b>, so VIO position jitter cannot bend the pursuit. The bottom lane only has to
+      keep the aircraft from wandering — and bounded drift is enough for that.</p>
   </div>
 </section>
 
+<!-- ============ 03 WHAT THE SERVO SEES (custom animated) ============ -->
 <section class="block">
   <div class="card">
     <div class="num">03</div>
+    <h2>What the Servo Sees</h2>
+    <p class="sub">Pixel error in, body-frame velocity out. The whole control law fits in one picture.</p>
+    <div class="figure">
+    <svg viewBox="0 0 1200 470" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#e63946"/>
+        </marker>
+        <marker id="arrK" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#0d1321"/>
+        </marker>
+      </defs>
+
+      <!-- camera frame -->
+      <rect x="60" y="40" width="640" height="380" rx="8" fill="#0d1321" />
+      <g stroke="#2c3a52" stroke-width="1">
+        <line x1="273" y1="40" x2="273" y2="420"/><line x1="487" y1="40" x2="487" y2="420"/>
+        <line x1="60" y1="167" x2="700" y2="167"/><line x1="60" y1="293" x2="700" y2="293"/>
+      </g>
+      <!-- crosshair -->
+      <g stroke="#8fa3c2" stroke-width="2">
+        <line x1="380" y1="200" x2="380" y2="260"/>
+        <line x1="350" y1="230" x2="410" y2="230"/>
+        <circle cx="380" cy="230" r="26" fill="none" stroke-dasharray="5 5"/>
+      </g>
+      <text x="74" y="66" class="boxSub" style="fill:#7e8da3">CAMERA VIEW · normalized coords</text>
+
+      <!-- error vector: animated, synced with target -->
+      <line x1="380" y1="230" stroke="#e63946" stroke-width="3" marker-end="url(#arrR)">
+        <animate attributeName="x2" values="545;395;545" keyTimes="0;.5;1" dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y2" values="135;222;135" keyTimes="0;.5;1" dur="6s" repeatCount="indefinite"/>
+      </line>
+      <text x="475" y="205" class="annoB" style="fill:#ff8a93">(ex, ey)</text>
+
+      <!-- target drone glyph: animated -->
+      <g>
+        <animateTransform attributeName="transform" type="translate"
+          values="560,120; 410,207; 560,120" keyTimes="0;.5;1" dur="6s" repeatCount="indefinite"/>
+        <rect x="-34" y="-24" width="68" height="48" fill="none" stroke="#39e6a3" stroke-width="2.5"/>
+        <circle cx="0" cy="0" r="7" fill="#39e6a3"/>
+        <line x1="-14" y1="-10" x2="14" y2="10" stroke="#39e6a3" stroke-width="3"/>
+        <line x1="-14" y1="10" x2="14" y2="-10" stroke="#39e6a3" stroke-width="3"/>
+        <circle cx="-14" cy="-10" r="5" fill="none" stroke="#39e6a3" stroke-width="2"/>
+        <circle cx="14" cy="-10" r="5" fill="none" stroke="#39e6a3" stroke-width="2"/>
+        <circle cx="-14" cy="10" r="5" fill="none" stroke="#39e6a3" stroke-width="2"/>
+        <circle cx="14" cy="10" r="5" fill="none" stroke="#39e6a3" stroke-width="2"/>
+        <text x="0" y="-34" text-anchor="middle" class="boxSub" style="fill:#39e6a3">id 7 · conf 0.91</text>
+      </g>
+
+      <!-- mapping arrows -->
+      <g>
+        <path d="M715,120 H800" stroke="#0d1321" stroke-width="2" marker-end="url(#arrK)"/>
+        <path d="M715,230 H800" stroke="#0d1321" stroke-width="2" marker-end="url(#arrK)"/>
+        <path d="M715,340 H800" stroke="#0d1321" stroke-width="2" marker-end="url(#arrK)"/>
+      </g>
+
+      <!-- command panel -->
+      <g>
+        <rect x="810" y="78" width="340" height="84" rx="10" fill="#fff" stroke="#0a84ff" stroke-width="2"/>
+        <text x="830" y="112" class="boxTitle">ex → yaw rate</text>
+        <text x="830" y="138" class="boxSub">horizontal pixel error steers the nose · cap 60°/s</text>
+
+        <rect x="810" y="188" width="340" height="84" rx="10" fill="#fff" stroke="#7c4dff" stroke-width="2"/>
+        <text x="830" y="222" class="boxTitle">ey → climb rate</text>
+        <text x="830" y="248" class="boxSub">vertical pixel error sets vz · cap 2.8 m/s</text>
+
+        <rect x="810" y="298" width="340" height="84" rx="10" fill="#fff" stroke="#2a9d8f" stroke-width="2"/>
+        <text x="830" y="332" class="boxTitle">range gap → forward speed</text>
+        <text x="830" y="358" class="boxSub">bbox size + depth vs stand-off gap · cap 8 m/s</text>
+      </g>
+    </svg>
+    </div>
+    <p class="explain"><b>Why body-frame matters:</b> these three commands reference only the camera
+      image and the airframe itself — no world coordinates. A wrong world-position estimate
+      (the only thing GPS jamming can poison) literally has no input into this loop.
+      That is why tracking survives jamming with <b>9/11 frames held over ~30 s</b>.</p>
+  </div>
+</section>
+
+<!-- ============ 04 GPS DIES (custom animated chart) ============ -->
+<section class="block">
+  <div class="card">
+    <div class="num">04</div>
+    <h2>The Moment GPS Dies</h2>
+    <p class="sub">Measured drift during a 22-second jam, 38 m of flight (vio_test.py).</p>
+    <div class="figure">
+    <svg viewBox="0 0 1200 440" xmlns="http://www.w3.org/2000/svg">
+      <!-- jam window -->
+      <rect x="236" y="50" width="748" height="310" fill="#e6394609"/>
+      <line x1="236" y1="50" x2="236" y2="360" stroke="#e63946" stroke-width="1.5" stroke-dasharray="6 5"/>
+      <line x1="984" y1="50" x2="984" y2="360" stroke="#2a9d8f" stroke-width="1.5" stroke-dasharray="6 5"/>
+      <text x="610" y="78" text-anchor="middle" class="annoB" style="fill:#e63946">GPS JAMMED — 22 s · 38 m flown</text>
+      <text x="244" y="100" class="anno" style="fill:#e63946">jam starts</text>
+      <text x="992" y="100" class="anno" style="fill:#2a9d8f">signal returns</text>
+
+      <!-- axes -->
+      <line x1="100" y1="360" x2="1120" y2="360" stroke="#aab2bc" stroke-width="1.5"/>
+      <line x1="100" y1="50"  x2="100" y2="360" stroke="#aab2bc" stroke-width="1.5"/>
+      <g class="axis" text-anchor="middle">
+        <text x="100" y="382">0 s</text><text x="270" y="382">5 s</text><text x="440" y="382">10 s</text>
+        <text x="610" y="382">15 s</text><text x="780" y="382">20 s</text><text x="950" y="382">25 s</text><text x="1120" y="382">30 s</text>
+      </g>
+      <g class="axis" text-anchor="end">
+        <text x="92" y="364">0 m</text><text x="92" y="298">5 m</text><text x="92" y="235">10 m</text>
+        <text x="92" y="172">15 m</text><text x="92" y="110">20 m</text>
+      </g>
+      <text x="40" y="205" class="axis" transform="rotate(-90 40 205)" text-anchor="middle">position error</text>
+
+      <!-- IMU-only divergence -->
+      <path class="draw" pathLength="1" d="M236,358 C400,346 620,290 760,210 S950,80 984,52"
+            fill="none" stroke="#e63946" stroke-width="3" stroke-linecap="round" style="--vis:.85; opacity:.85; animation-delay:.4s"/>
+      <text x="760" y="160" class="annoB" style="fill:#e63946">IMU dead-reckoning only: diverges</text>
+
+      <!-- VIO bounded -->
+      <path class="draw" pathLength="1" d="M236,358 C350,352 470,332 620,320 S860,308 984,304 C1010,303 1030,345 1080,350"
+            fill="none" stroke="#2a9d8f" stroke-width="4" stroke-linecap="round"/>
+      <text x="640" y="288" class="annoB" style="fill:#2a9d8f">VIO free-run: 4.5 m bounded drift</text>
+      <text x="1000" y="330" class="anno" style="fill:#2a9d8f">re-anchors on GPS return</text>
+
+      <!-- VO success note -->
+      <rect x="330" y="396" width="540" height="34" rx="17" fill="#2a9d8f12"/>
+      <text x="600" y="418" text-anchor="middle" class="annoB" style="fill:#2a9d8f">visual odometry succeeded on 98% of jam frames</text>
+    </svg>
+    </div>
+    <p class="explain"><b>Bounded vs divergent is the whole game.</b> Pure inertial navigation
+      compounds error every second — unusable within half a minute. Vision pins the estimate to the
+      world: drift grows slowly and stays flat. 4.5 m of self-position error while the
+      body-frame servo (section 03) handles the target means <b>the mission continues</b>.</p>
+  </div>
+</section>
+
+<!-- ============ 05 DROPOUT COAST (custom, JS-built filmstrip) ============ -->
+<section class="block">
+  <div class="card">
+    <div class="num">05</div>
+    <h2>Coasting Through Detector Drop-Outs</h2>
+    <p class="sub">Real detectors blink. The track must not. Green = detector hit, red = miss, dashed = Kalman-predicted box.</p>
+    <div class="figure">
+      <svg id="svg-coast" viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <p class="explain"><b>Coasting:</b> on a missed frame the image-space Kalman filter keeps
+      predicting where the target should be, so the lock never drops and the servo keeps flying a
+      smooth command. When the detector recovers, the filter snaps back to the true box.
+      This is what lets the <b>standoff hold stay smooth through drop-outs</b> instead of jerking
+      or losing the target entirely.</p>
+  </div>
+</section>
+
+<!-- ============ 06 STRIKE GEOMETRY (custom animated) ============ -->
+<section class="block">
+  <div class="card">
+    <div class="num">06</div>
+    <h2>Terminal Guidance — Lead, Don't Chase</h2>
+    <p class="sub">Proportional navigation aims at where the target will be, not where it is.</p>
+    <div class="figure">
+    <svg viewBox="0 0 1200 420" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7c4dff"/>
+        </marker>
+      </defs>
+      <!-- target path -->
+      <path id="tgtPath" d="M250,80 C480,60 760,120 1050,300" fill="none" stroke="#39c2a3" stroke-width="2.5" stroke-dasharray="7 6"/>
+      <text x="300" y="60" class="annoB" style="fill:#2a9d8f">target track</text>
+
+      <!-- naive chase path (tail chase) -->
+      <path d="M120,360 C320,330 560,250 1050,300" fill="none" stroke="#c2c9d2" stroke-width="2" stroke-dasharray="4 5"/>
+      <text x="430" y="318" class="anno" style="fill:#9aa3ad">naive tail-chase: always behind</text>
+
+      <!-- PN intercept path -->
+      <path id="pnPath" d="M120,360 C360,330 620,250 880,205" fill="none" stroke="#7c4dff" stroke-width="3" marker-end="url(#arrP)"/>
+      <text x="250" y="270" class="annoB" style="fill:#7c4dff" transform="rotate(-12 250 270)">PN lead-pursuit: cuts the corner</text>
+
+      <!-- predicted intercept point -->
+      <circle cx="880" cy="205" r="10" fill="none" stroke="#e63946" stroke-width="2.5">
+        <animate attributeName="r" values="8;16;8" dur="1.8s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="880" cy="205" r="4" fill="#e63946"/>
+      <text x="900" y="200" class="annoB" style="fill:#e63946">predicted intercept point</text>
+
+      <!-- moving chaser -->
+      <g>
+        <circle r="8" fill="#7c4dff"><animateMotion dur="4s" repeatCount="indefinite" rotate="auto"><mpath href="#pnPath"/></animateMotion></circle>
+      </g>
+      <!-- moving target -->
+      <g>
+        <rect x="-9" y="-6" width="18" height="12" fill="#2a9d8f"><animateMotion dur="4s" repeatCount="indefinite"><mpath href="#tgtPath"/></animateMotion></rect>
+      </g>
+      <!-- start markers -->
+      <circle cx="120" cy="360" r="6" fill="#7c4dff"/>
+      <text x="92" y="388" class="anno" style="fill:#7c4dff">chaser</text>
+    </svg>
+    </div>
+    <p class="explain"><b>Reused, not reinvented:</b> the strike law is classic homing guidance
+      (proportional navigation + a predicted-intercept-point lead term). It runs on the same
+      vision-only target state as tracking — no GPS, no rangefinder. The novelty is the integration:
+      a single camera feeding detection, tracking, localization, <b>and</b> terminal guidance.</p>
+  </div>
+</section>
+
+<!-- ============ 07 MEASURED RESULTS (AntV) ============ -->
+<section class="block">
+  <div class="card">
+    <div class="num">07</div>
     <h2>Measured Results — Sim, Not Slideware</h2>
     <p class="sub">All numbers from logged AirSim scenario runs (scenario_eval.py / vio_test.py).</p>
     <div id="ig-metrics" class="canvas"></div>
   </div>
 </section>
 
+<!-- ============ 08 RL vs EXPERT (AntV) ============ -->
 <section class="block">
   <div class="card">
-    <div class="num">04</div>
+    <div class="num">08</div>
     <h2>Learned Pilot vs Hand-Built Expert</h2>
     <p class="sub">PPO policy trained on 300 identical episodes with actuator lag and detector drop-outs — then beats the hand-tuned law it cloned.</p>
     <div class="vs-heads">
@@ -113,18 +486,20 @@
   </div>
 </section>
 
+<!-- ============ 09 ROADMAP (AntV) ============ -->
 <section class="block">
   <div class="card">
-    <div class="num">05</div>
+    <div class="num">09</div>
     <h2>Road to Real Hardware</h2>
     <p class="sub">Algorithms are mature; remaining work is integration, calibration, and flight safety.</p>
     <div id="ig-roadmap" class="canvas"></div>
   </div>
 </section>
 
+<!-- ============ 10 STACK (AntV) ============ -->
 <section class="block">
   <div class="card">
-    <div class="num">06</div>
+    <div class="num">10</div>
     <h2>What's Under the Hood</h2>
     <p class="sub">Proven OSS where it exists (YOLO26, ByteTrack, OpenVINS, PX4 EKF2) — custom code only where it earns its keep.</p>
     <div id="ig-stack" class="canvas"></div>
@@ -132,10 +507,104 @@
 </section>
 
 <footer>
-  THIRD IRIS · GPS-denied visual pursuit · rendered with AntV Infographic · all metrics reproducible from repo
+  THIRD IRIS · GPS-denied visual pursuit · animated SVG + AntV Infographic · all metrics reproducible from repo
 </footer>
 
 <script>
+// ---------- 05 filmstrip (built in JS so it stays maintainable) ----------
+(function buildCoast() {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.getElementById('svg-coast');
+  const miss = {4:1, 5:1, 8:1};
+  const N = 12, x0 = 36, fw = 80, gap = 14, top = 64, fh = 60;
+  const pitch = fw + gap;
+
+  // legend
+  const legend = [
+    ['#2a9d8f', 'detector hit'],
+    ['#e63946', 'detector miss'],
+    ['#7c4dff', 'Kalman prediction'],
+  ];
+  legend.forEach((L, i) => {
+    const lx = x0 + i * 250;
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', lx); r.setAttribute('y', 18); r.setAttribute('width', 18);
+    r.setAttribute('height', 12); r.setAttribute('rx', 2); r.setAttribute('fill', 'none');
+    r.setAttribute('stroke', L[0]); r.setAttribute('stroke-width', 2.4);
+    if (i === 2) r.setAttribute('stroke-dasharray', '4 3');
+    svg.appendChild(r);
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', lx + 26); t.setAttribute('y', 29);
+    t.setAttribute('class', 'anno'); t.textContent = L[1];
+    svg.appendChild(t);
+  });
+
+  for (let i = 0; i < N; i++) {
+    const x = x0 + i * pitch;
+    const isMiss = !!miss[i];
+
+    const frame = document.createElementNS(NS, 'rect');
+    frame.setAttribute('x', x); frame.setAttribute('y', top);
+    frame.setAttribute('width', fw); frame.setAttribute('height', fh);
+    frame.setAttribute('rx', 5);
+    frame.setAttribute('fill', isMiss ? '#fdf0f1' : '#eef3f9');
+    frame.setAttribute('stroke', isMiss ? '#e63946' : '#b9c6d6');
+    frame.setAttribute('stroke-width', 1.6);
+    if (isMiss) frame.setAttribute('stroke-dasharray', '5 4');
+    svg.appendChild(frame);
+
+    // target box drifts right + bobs, the SAME smooth path through hits and misses
+    const bx = x + 16 + i * 3.4;
+    const by = top + 22 - Math.sin(i / (N - 1) * Math.PI) * 9;
+    const box = document.createElementNS(NS, 'rect');
+    box.setAttribute('x', bx); box.setAttribute('y', by);
+    box.setAttribute('width', 26); box.setAttribute('height', 17);
+    box.setAttribute('fill', 'none');
+    box.setAttribute('stroke-width', 2.4);
+    box.setAttribute('stroke', isMiss ? '#7c4dff' : '#2a9d8f');
+    if (isMiss) box.setAttribute('stroke-dasharray', '4 3');
+    svg.appendChild(box);
+
+    // frame index
+    const idx = document.createElementNS(NS, 'text');
+    idx.setAttribute('x', x + fw / 2); idx.setAttribute('y', top + fh + 18);
+    idx.setAttribute('text-anchor', 'middle'); idx.setAttribute('class', 'axis');
+    idx.textContent = 't+' + i;
+    svg.appendChild(idx);
+  }
+
+  // continuous LOCK bar underneath — never breaks
+  const barY = top + fh + 40, barX = x0, barW = (N - 1) * pitch + fw;
+  const bar = document.createElementNS(NS, 'rect');
+  bar.setAttribute('x', barX); bar.setAttribute('y', barY);
+  bar.setAttribute('width', barW); bar.setAttribute('height', 30); bar.setAttribute('rx', 15);
+  bar.setAttribute('fill', '#2a9d8f18'); bar.setAttribute('stroke', '#2a9d8f');
+  bar.setAttribute('stroke-width', 1.5);
+  svg.appendChild(bar);
+  const bt = document.createElementNS(NS, 'text');
+  bt.setAttribute('x', barX + barW / 2); bt.setAttribute('y', barY + 20);
+  bt.setAttribute('text-anchor', 'middle'); bt.setAttribute('class', 'annoB');
+  bt.setAttribute('style', 'fill:#2a9d8f');
+  bt.textContent = 'LOCK HELD — track ID 7 continuous through all 12 frames';
+  svg.appendChild(bt);
+
+  // sweeping playhead
+  const head = document.createElementNS(NS, 'line');
+  head.setAttribute('y1', top - 8); head.setAttribute('y2', barY + 38);
+  head.setAttribute('stroke', '#0a84ff'); head.setAttribute('stroke-width', 2);
+  const an = document.createElementNS(NS, 'animate');
+  an.setAttribute('attributeName', 'x1');
+  an.setAttribute('values', (x0) + ';' + (x0 + barW) + ';' + (x0));
+  an.setAttribute('dur', '6s'); an.setAttribute('repeatCount', 'indefinite');
+  const an2 = document.createElementNS(NS, 'animate');
+  an2.setAttribute('attributeName', 'x2');
+  an2.setAttribute('values', (x0) + ';' + (x0 + barW) + ';' + (x0));
+  an2.setAttribute('dur', '6s'); an2.setAttribute('repeatCount', 'indefinite');
+  head.appendChild(an); head.appendChild(an2);
+  svg.appendChild(head);
+})();
+
+// ---------- AntV infographic sections ----------
 const { Infographic } = window.AntVInfographic;
 
 const SPECS = [
@@ -160,28 +629,6 @@ data
     - label ACT
       desc Body-frame servo + RL pilot at 10 Hz.
       icon rocket
-`
-  },
-  {
-    el: '#ig-architecture', height: 560,
-    dsl: `
-infographic hierarchy-mindmap-level-gradient-compact-card
-data
-  root
-    label One camera, 90 deg HFOV
-    children
-      - label Tracking mind — lock the target
-        children
-          - label YOLO26-seg detect, every frame
-          - label ByteTrack + Re-ID association
-          - label Image Kalman, coasts drop-outs
-          - label Body-frame visual servo, 10 Hz
-      - label Localization mind — know thyself
-        children
-          - label VIO, camera + IMU fusion
-          - label Magnetometer yaw aid
-          - label EKF2 vision-pose fusion
-          - label Position hold with zero GPS
 `
   },
   {
@@ -263,7 +710,7 @@ data
   {
     el: '#ig-stack', height: 620,
     dsl: `
-infographic hierarchy-mindmap-branch-gradient-rounded-rect
+infographic hierarchy-mindmap-level-gradient-rounded-rect
 data
   root
     label THIRD IRIS stack
