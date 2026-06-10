@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THIRD IRIS — GPS-Denied Vision Pursuit, Explained Visually</title>
+<script src="vendor/infographic.min.js"></script>
+<style>
+  :root {
+    --ink: #0d1321;
+    --muted: #5c6470;
+    --accent: #0a84ff;
+    --paper: #f6f7f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--ink);
+  }
+  header.hero {
+    background: linear-gradient(135deg, #0d1321 0%, #1d2d44 60%, #274060 100%);
+    color: #fff;
+    padding: 56px 48px 48px;
+  }
+  header.hero h1 { margin: 0 0 8px; font-size: 40px; letter-spacing: 1px; }
+  header.hero p  { margin: 0; font-size: 18px; color: #c9d4e3; max-width: 880px; }
+  header.hero .tag {
+    display: inline-block; margin-bottom: 18px; padding: 4px 14px;
+    border: 1px solid #4d648d; border-radius: 999px;
+    font-size: 12px; letter-spacing: 2px; color: #9fb3d1;
+  }
+  section.block {
+    max-width: 1180px; margin: 36px auto; padding: 0 24px;
+    page-break-inside: avoid;
+  }
+  section.block .card {
+    background: #fff; border-radius: 14px;
+    box-shadow: 0 2px 14px rgba(13,19,33,.07);
+    padding: 28px 28px 12px;
+  }
+  section.block h2 { margin: 0 0 4px; font-size: 24px; }
+  section.block .sub { margin: 0 0 18px; color: var(--muted); font-size: 14.5px; }
+  section.block .num {
+    color: var(--accent); font-weight: 700; font-size: 13px; letter-spacing: 2px;
+  }
+  .canvas { width: 100%; }
+  .vs-heads {
+    display: flex; justify-content: space-between;
+    padding: 6px 10%; font-weight: 700; font-size: 15px; letter-spacing: 1.5px;
+  }
+  .vs-heads span:first-child { color: #5c6470; }
+  .vs-heads span:last-child  { color: var(--accent); }
+  .canvas svg { width: 100% !important; height: auto !important; display: block; }
+  footer {
+    text-align: center; color: var(--muted); font-size: 12.5px; padding: 28px 0 40px;
+  }
+  @media print {
+    body { background: #fff; }
+    section.block .card { box-shadow: none; border: 1px solid #e3e6ea; }
+    header.hero { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="tag">PITCH &nbsp;·&nbsp; TECHNICAL OVERVIEW</div>
+  <h1>THIRD IRIS</h1>
+  <p>Autonomous air-to-air pursuit when GPS is gone. One camera feeds two minds —
+     a tracking pipeline that locks the target, and a visual-inertial odometry pipeline
+     that keeps the aircraft localized. Every claim below is a measured sim result, not a promise.</p>
+</header>
+
+<section class="block">
+  <div class="card">
+    <div class="num">01</div>
+    <h2>The Pursuit Pipeline</h2>
+    <p class="sub">Five stages, one 10 Hz onboard loop. No GPS anywhere in this chain.</p>
+    <div id="ig-pipeline" class="canvas"></div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="card">
+    <div class="num">02</div>
+    <h2>One Camera, Two Minds</h2>
+    <p class="sub">Every frame is consumed twice: tracking locks the target; VIO keeps self-position when GPS is jammed. EKF2 fuses vision pose so the autopilot never notices the jam.</p>
+    <div id="ig-architecture" class="canvas"></div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="card">
+    <div class="num">03</div>
+    <h2>Measured Results — Sim, Not Slideware</h2>
+    <p class="sub">All numbers from logged AirSim scenario runs (scenario_eval.py / vio_test.py).</p>
+    <div id="ig-metrics" class="canvas"></div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="card">
+    <div class="num">04</div>
+    <h2>Learned Pilot vs Hand-Built Expert</h2>
+    <p class="sub">PPO policy trained on 300 identical episodes with actuator lag and detector drop-outs — then beats the hand-tuned law it cloned.</p>
+    <div class="vs-heads">
+      <span>HAND-BUILT EXPERT</span>
+      <span>LEARNED RL PILOT</span>
+    </div>
+    <div id="ig-rl" class="canvas"></div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="card">
+    <div class="num">05</div>
+    <h2>Road to Real Hardware</h2>
+    <p class="sub">Algorithms are mature; remaining work is integration, calibration, and flight safety.</p>
+    <div id="ig-roadmap" class="canvas"></div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="card">
+    <div class="num">06</div>
+    <h2>What's Under the Hood</h2>
+    <p class="sub">Proven OSS where it exists (YOLO26, ByteTrack, OpenVINS, PX4 EKF2) — custom code only where it earns its keep.</p>
+    <div id="ig-stack" class="canvas"></div>
+  </div>
+</section>
+
+<footer>
+  THIRD IRIS · GPS-denied visual pursuit · rendered with AntV Infographic · all metrics reproducible from repo
+</footer>
+
+<script>
+const { Infographic } = window.AntVInfographic;
+
+const SPECS = [
+  {
+    el: '#ig-pipeline', height: 480,
+    dsl: `
+infographic list-row-horizontal-icon-arrow
+data
+  items
+    - label SEE
+      desc YOLO26-seg every frame. mAP50 0.97.
+      icon eye
+    - label TRACK
+      desc ByteTrack + Re-ID + image Kalman. Coasts drop-outs.
+      icon target
+    - label LOCATE
+      desc Visual-inertial odometry. No GPS needed.
+      icon map-pin
+    - label AVOID
+      desc Depth-as-LiDAR repulsion. Pursuit unbroken.
+      icon shield
+    - label ACT
+      desc Body-frame servo + RL pilot at 10 Hz.
+      icon rocket
+`
+  },
+  {
+    el: '#ig-architecture', height: 560,
+    dsl: `
+infographic hierarchy-mindmap-level-gradient-compact-card
+data
+  root
+    label One camera, 90 deg HFOV
+    children
+      - label Tracking mind — lock the target
+        children
+          - label YOLO26-seg detect, every frame
+          - label ByteTrack + Re-ID association
+          - label Image Kalman, coasts drop-outs
+          - label Body-frame visual servo, 10 Hz
+      - label Localization mind — know thyself
+        children
+          - label VIO, camera + IMU fusion
+          - label Magnetometer yaw aid
+          - label EKF2 vision-pose fusion
+          - label Position hold with zero GPS
+`
+  },
+  {
+    el: '#ig-metrics', height: 560,
+    dsl: `
+infographic list-grid-badge-card
+data
+  items
+    - label 0.97 mAP50
+      desc Sim air-to-air detection; 0.77 on real held-out frames.
+      icon eye
+    - label 84% in frame
+      desc Random-trajectory pursuit, 12 m gap held.
+      icon target
+    - label 98% VO success
+      desc GPS jammed 22 s / 38 m flown.
+      icon compass
+    - label 4.5 m drift
+      desc Bounded drift after jam. Not divergence.
+      icon map-pin
+    - label 9/11 tracked
+      desc Pure vision through 30 s jam, gap 9–16 m.
+      icon radio
+    - label 4.37 m mean
+      desc VIO-only waypoint nav with mag aid; max 7.02 m.
+      icon map
+`
+  },
+  {
+    el: '#ig-rl', height: 520,
+    dsl: `
+infographic compare-binary-horizontal-badge-card-vs
+data
+  compares
+    - label Hand-built expert
+      icon wrench
+      children
+        - label 100% in frame
+          desc Keeps target in frame
+        - label 0.263 centering
+          desc Centering error
+        - label 7.2 m stand-off
+          desc Stand-off hold error
+        - label Partial coast
+          desc Struggles on detector drop-outs
+    - label Learned RL pilot
+      icon brain
+      children
+        - label 99.9% in frame
+          desc Keeps target in frame
+        - label 0.107 centering
+          desc 2.5x tighter
+        - label 4.3 m stand-off
+          desc 40% better hold
+        - label Drop-out proof
+          desc Trained on drop-outs and lag
+`
+  },
+  {
+    el: '#ig-roadmap', height: 640,
+    dsl: `
+infographic sequence-roadmap-vertical-pill-badge
+data
+  items
+    - label Phase A — Production VIO in sim
+      desc Swap hand-rolled VIO for VINS-Fusion / OpenVINS via ROS2 + PX4 SITL. Prove EKF2 holds position on vision alone. No hardware. Days to ~2 weeks.
+      icon monitor
+    - label Phase B — Bench bring-up
+      desc Camera + Jetson Orin + flight controller on bench. Kalibr calibration, EKF2 vision-hold with GPS off. 1–2 weeks.
+      icon cpu
+    - label Phase C — Flight testing
+      desc Tethered, short hops, GPS-jam handover, target tracking, then strike-intercept on a safe range. Weeks to months — safety dominates.
+      icon send
+    - label Intelligence layer
+      desc Qwen2.5-1.5B on Orin as 0.5 Hz advisor — SEARCH / TRACK / STRIKE / RETURN / HOLD. Deterministic safety gate; agent never touches actuators.
+      icon brain
+`
+  },
+  {
+    el: '#ig-stack', height: 620,
+    dsl: `
+infographic hierarchy-mindmap-branch-gradient-rounded-rect
+data
+  root
+    label THIRD IRIS stack
+    children
+      - label Perception
+        children
+          - label YOLO26-seg fine-tuned
+          - label ByteTrack / BoT-SORT + Re-ID
+      - label Guidance
+        children
+          - label Standoff law + 3D Kalman
+          - label PN strike guidance
+          - label Depth-as-LiDAR avoidance
+      - label Localization
+        children
+          - label VIO RGB-D + IMU
+          - label Mag yaw aid
+          - label PX4 EKF2 vision fusion
+      - label Learned pilot
+        children
+          - label Behavior cloning
+          - label PPO fine-tune
+      - label Ground station
+        children
+          - label Click-to-lock web UI
+          - label MAVLink / RTSP sources
+`
+  },
+];
+
+for (const spec of SPECS) {
+  try {
+    const ig = new Infographic({
+      container: spec.el,
+      width: 1100,
+      height: spec.height,
+      editable: false,
+    });
+    ig.render(spec.dsl.trim());
+  } catch (e) {
+    console.error('render failed for', spec.el, e);
+    document.querySelector(spec.el).innerHTML =
+      '<pre style="color:#c00">' + e.message + '</pre>';
+  }
+}
+
+// Library letterboxes content inside the fixed constructor size; retarget each
+// SVG's aspect to its content viewBox so cards hug the graphic.
+function fitSvgs() {
+  document.querySelectorAll('.canvas svg').forEach(svg => {
+    const vb = (svg.getAttribute('viewBox') || '').split(/\s+/).map(Number);
+    if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+      svg.style.aspectRatio = vb[2] + ' / ' + vb[3];
+      svg.removeAttribute('width');
+      svg.removeAttribute('height');
+    }
+  });
+}
+setTimeout(fitSvgs, 1200);
+setTimeout(fitSvgs, 4000);
+</script>
+</body>
+</html>
