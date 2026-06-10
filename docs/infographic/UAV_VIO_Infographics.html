@@ -144,117 +144,18 @@
   </div>
 </section>
 
-<!-- ============ 02 TWO MINDS (custom animated) ============ -->
+<!-- ============ 02 TWO MINDS (AntV animated interaction swimlanes) ============ -->
 <section class="block">
   <div class="card">
     <div class="num">02</div>
     <h2>One Camera, Two Minds</h2>
-    <p class="sub">Watch the frames flow: every image is consumed twice, by two independent pipelines, at the same instant.</p>
-    <div class="figure">
-    <svg viewBox="0 0 1200 600" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M0,0 L10,5 L0,10 z" fill="#9aa6b4"/>
-        </marker>
-        <marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M0,0 L10,5 L0,10 z" fill="#0a84ff"/>
-        </marker>
-        <marker id="arrG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M0,0 L10,5 L0,10 z" fill="#2a9d8f"/>
-        </marker>
-      </defs>
-
-      <!-- lane banners -->
-      <rect x="240" y="30" width="920" height="34" rx="17" fill="#0a84ff10"/>
-      <text x="700" y="52" text-anchor="middle" class="lane" fill="#0a84ff">TRACKING MIND — WHERE IS THE TARGET?</text>
-      <rect x="240" y="536" width="920" height="34" rx="17" fill="#2a9d8f12"/>
-      <text x="700" y="558" text-anchor="middle" class="lane" fill="#2a9d8f">LOCALIZATION MIND — WHERE AM I?</text>
-
-      <!-- flow paths (dots travel these) -->
-      <path id="flowTop" d="M175,295 C215,295 205,150 265,150 H1140" fill="none" stroke="#c6d4e4" stroke-width="2.5" marker-end="url(#arrB)"/>
-      <path id="flowBot" d="M175,305 C215,305 205,450 265,450 H1140" fill="none" stroke="#c8ddd9" stroke-width="2.5" marker-end="url(#arrG)"/>
-      <path id="flowImu" d="M175,392 C215,392 225,450 265,450" fill="none" stroke="#c8ddd9" stroke-width="2" stroke-dasharray="5 4"/>
-      <text x="218" y="212" class="anno" fill="#0a84ff" transform="rotate(-58 218 212)">every frame</text>
-      <text x="218" y="412" class="anno" fill="#2a9d8f" transform="rotate(58 218 388)">same frame</text>
-
-      <!-- GPS denied line -->
-      <path d="M175,505 H560 C600,505 610,492 622,490" fill="none" stroke="#e6394666" stroke-width="2" stroke-dasharray="6 5"/>
-      <g transform="translate(395,505)">
-        <line x1="-11" y1="-11" x2="11" y2="11" stroke="#e63946" stroke-width="4"/>
-        <line x1="-11" y1="11" x2="11" y2="-11" stroke="#e63946" stroke-width="4"/>
-      </g>
-      <text x="395" y="540" text-anchor="middle" class="annoB" fill="#e63946">signal denied — and it does not matter</text>
-
-      <!-- EKF2 aids servo (cross link) -->
-      <path d="M705,410 C705,330 880,300 935,225" fill="none" stroke="#7c4dff55" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arr)"/>
-      <text x="836" y="318" class="anno" fill="#7c4dff">velocity &amp; altitude aid</text>
-
-      <!-- frame pulses -->
-      <g>
-        <circle r="6" fill="#0a84ff"><animateMotion dur="4s" repeatCount="indefinite"><mpath href="#flowTop"/></animateMotion></circle>
-        <circle r="6" fill="#0a84ff" opacity=".75"><animateMotion dur="4s" begin="1.33s" repeatCount="indefinite"><mpath href="#flowTop"/></animateMotion></circle>
-        <circle r="6" fill="#0a84ff" opacity=".55"><animateMotion dur="4s" begin="2.66s" repeatCount="indefinite"><mpath href="#flowTop"/></animateMotion></circle>
-        <circle r="6" fill="#2a9d8f"><animateMotion dur="4s" repeatCount="indefinite"><mpath href="#flowBot"/></animateMotion></circle>
-        <circle r="6" fill="#2a9d8f" opacity=".75"><animateMotion dur="4s" begin="1.33s" repeatCount="indefinite"><mpath href="#flowBot"/></animateMotion></circle>
-        <circle r="6" fill="#2a9d8f" opacity=".55"><animateMotion dur="4s" begin="2.66s" repeatCount="indefinite"><mpath href="#flowBot"/></animateMotion></circle>
-        <circle r="4.5" fill="#f4a261"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#flowImu"/></animateMotion></circle>
-        <circle r="4.5" fill="#f4a261" opacity=".7"><animateMotion dur="1.6s" begin="0.8s" repeatCount="indefinite"><mpath href="#flowImu"/></animateMotion></circle>
-      </g>
-
-      <!-- sensor boxes -->
-      <g>
-        <rect x="40" y="260" width="135" height="74" rx="10" fill="#fff" stroke="#0d1321" stroke-width="2"/>
-        <text x="107" y="290" text-anchor="middle" class="boxTitle">CAMERA</text>
-        <text x="107" y="312" text-anchor="middle" class="boxSub">90° HFOV · RGB-D</text>
-
-        <rect x="40" y="362" width="135" height="58" rx="10" fill="#fff" stroke="#f4a261" stroke-width="2"/>
-        <text x="107" y="387" text-anchor="middle" class="boxTitle" style="font-size:15px">IMU</text>
-        <text x="107" y="406" text-anchor="middle" class="boxSub">gyro + accel, 200 Hz</text>
-
-        <rect x="40" y="476" width="135" height="58" rx="10" fill="#f3f4f6" stroke="#aab2bc" stroke-width="2" stroke-dasharray="6 4"/>
-        <text x="107" y="501" text-anchor="middle" class="boxTitle" style="font-size:15px;fill:#9aa3ad">GPS</text>
-        <text x="107" y="520" text-anchor="middle" class="boxSub" style="fill:#e63946;font-weight:700">JAMMED</text>
-      </g>
-
-      <!-- tracking lane boxes -->
-      <g>
-        <rect x="265" y="110" width="180" height="80" rx="10" fill="#fff" stroke="#0a84ff" stroke-width="2"/>
-        <text x="355" y="143" text-anchor="middle" class="boxTitle">DETECT</text>
-        <text x="355" y="164" text-anchor="middle" class="boxSub">YOLO26-seg · mAP50 0.97</text>
-
-        <rect x="490" y="110" width="180" height="80" rx="10" fill="#fff" stroke="#0a84ff" stroke-width="2"/>
-        <text x="580" y="143" text-anchor="middle" class="boxTitle">TRACK</text>
-        <text x="580" y="164" text-anchor="middle" class="boxSub">ByteTrack + Re-ID</text>
-
-        <rect x="715" y="110" width="180" height="80" rx="10" fill="#fff" stroke="#0a84ff" stroke-width="2"/>
-        <text x="805" y="143" text-anchor="middle" class="boxTitle">PREDICT</text>
-        <text x="805" y="164" text-anchor="middle" class="boxSub">image Kalman · lead &amp; coast</text>
-
-        <rect x="940" y="110" width="180" height="80" rx="10" fill="#0a84ff" stroke="#0a84ff" stroke-width="2"/>
-        <text x="1030" y="143" text-anchor="middle" class="boxTitle" fill="#fff" style="fill:#fff">SERVO</text>
-        <text x="1030" y="164" text-anchor="middle" class="boxSub" style="fill:#dceafe">body-frame cmds · 10 Hz</text>
-      </g>
-
-      <!-- localization lane boxes -->
-      <g>
-        <rect x="265" y="410" width="200" height="80" rx="10" fill="#fff" stroke="#2a9d8f" stroke-width="2"/>
-        <text x="365" y="443" text-anchor="middle" class="boxTitle">VIO</text>
-        <text x="365" y="464" text-anchor="middle" class="boxSub">feature flow + IMU fusion</text>
-
-        <rect x="620" y="410" width="170" height="80" rx="10" fill="#fff" stroke="#2a9d8f" stroke-width="2"/>
-        <text x="705" y="443" text-anchor="middle" class="boxTitle">EKF2</text>
-        <text x="705" y="464" text-anchor="middle" class="boxSub">vision-pose fusion</text>
-
-        <rect x="940" y="410" width="180" height="80" rx="10" fill="#2a9d8f" stroke="#2a9d8f" stroke-width="2"/>
-        <text x="1030" y="443" text-anchor="middle" class="boxTitle" style="fill:#fff">POSITION</text>
-        <text x="1030" y="464" text-anchor="middle" class="boxSub" style="fill:#d9f2ee">held with zero GPS</text>
-      </g>
-    </svg>
-    </div>
+    <p class="sub">Two swimlanes, one camera. The animated arrows are the same frame flowing into both pipelines at once — top answers "where is the target?", bottom answers "where am I?".</p>
+    <div id="ig-twominds" class="canvas"></div>
     <p class="explain"><b>The trick:</b> when GPS dies, the chase does <b>not</b> switch to a
-      degraded mode. The servo loop (top) was never using GPS — it steers off pixel error in the
-      <b>body frame</b>, so VIO position jitter cannot bend the pursuit. The bottom lane only has to
-      keep the aircraft from wandering — and bounded drift is enough for that.</p>
+      degraded mode. The tracking lane (top) was never using GPS — it steers off pixel error in the
+      <b>body frame</b>, so VIO position jitter cannot bend the pursuit. The localization lane only
+      has to keep the aircraft from wandering — and bounded drift is enough for that. The dashed
+      cross-link is EKF2 feeding velocity &amp; altitude aid into the servo.</p>
   </div>
 </section>
 
@@ -613,7 +514,7 @@ const SPECS = [
     dsl: `
 infographic list-row-horizontal-icon-arrow
 data
-  items
+  lists
     - label SEE
       desc YOLO26-seg every frame. mAP50 0.97.
       icon eye
@@ -622,13 +523,74 @@ data
       icon target
     - label LOCATE
       desc Visual-inertial odometry. No GPS needed.
-      icon map-pin
+      icon map pin
     - label AVOID
       desc Depth-as-LiDAR repulsion. Pursuit unbroken.
       icon shield
     - label ACT
       desc Body-frame servo + RL pilot at 10 Hz.
       icon rocket
+theme
+  palette #0a84ff #18a999 #ff9f1c #7c4dff #2a9d8f
+`
+  },
+  {
+    el: '#ig-twominds', height: 520,
+    dsl: `
+infographic sequence-interaction-wide-animated-badge-card
+data
+  title One camera, two minds
+  sequences
+    - label Tracking mind — where is the target?
+      icon target
+      children
+        - label Detect
+          id t-det
+          step 0
+          desc YOLO26-seg
+          icon eye
+        - label Track
+          id t-trk
+          step 1
+          desc ByteTrack + Re-ID
+          icon crosshair
+        - label Predict
+          id t-pred
+          step 2
+          desc image Kalman, coast
+          icon activity
+        - label Servo
+          id t-servo
+          step 3
+          desc body-frame cmds, 10 Hz
+          icon navigation
+    - label Localization mind — where am I?
+      icon compass
+      children
+        - label VIO
+          id l-vio
+          step 0
+          desc feature flow + IMU
+          icon compass
+        - label EKF2
+          id l-ekf
+          step 2
+          desc vision-pose fusion
+          icon cpu
+        - label Hold
+          id l-hold
+          step 3
+          desc position held, zero GPS
+          icon anchor
+  relations
+    t-det - every frame -> t-trk
+    t-trk -> t-pred
+    t-pred -> t-servo
+    l-vio - same frame -> l-ekf
+    l-ekf -> l-hold
+    l-ekf - velocity & altitude aid -> t-servo
+theme
+  palette #0a84ff #2a9d8f #7c4dff
 `
   },
   {
@@ -636,7 +598,7 @@ data
     dsl: `
 infographic list-grid-badge-card
 data
-  items
+  lists
     - label 0.97 mAP50
       desc Sim air-to-air detection; 0.77 on real held-out frames.
       icon eye
@@ -648,13 +610,15 @@ data
       icon compass
     - label 4.5 m drift
       desc Bounded drift after jam. Not divergence.
-      icon map-pin
+      icon map pin
     - label 9/11 tracked
       desc Pure vision through 30 s jam, gap 9–16 m.
       icon radio
     - label 4.37 m mean
       desc VIO-only waypoint nav with mag aid; max 7.02 m.
       icon map
+theme
+  palette #0a84ff #18a999 #ff9f1c #7c4dff #2a9d8f #e63946
 `
   },
   {
@@ -668,23 +632,33 @@ data
       children
         - label 100% in frame
           desc Keeps target in frame
+          icon target
         - label 0.263 centering
           desc Centering error
+          icon crosshair
         - label 7.2 m stand-off
           desc Stand-off hold error
+          icon ruler
         - label Partial coast
           desc Struggles on detector drop-outs
+          icon alert triangle
     - label Learned RL pilot
       icon brain
       children
         - label 99.9% in frame
           desc Keeps target in frame
+          icon target
         - label 0.107 centering
           desc 2.5x tighter
+          icon crosshair
         - label 4.3 m stand-off
           desc 40% better hold
+          icon ruler
         - label Drop-out proof
           desc Trained on drop-outs and lag
+          icon shield check
+theme
+  palette #5c6470 #0a84ff
 `
   },
   {
@@ -692,7 +666,7 @@ data
     dsl: `
 infographic sequence-roadmap-vertical-pill-badge
 data
-  items
+  sequences
     - label Phase A — Production VIO in sim
       desc Swap hand-rolled VIO for VINS-Fusion / OpenVINS via ROS2 + PX4 SITL. Prove EKF2 holds position on vision alone. No hardware. Days to ~2 weeks.
       icon monitor
@@ -705,6 +679,9 @@ data
     - label Intelligence layer
       desc Qwen2.5-1.5B on Orin as 0.5 Hz advisor — SEARCH / TRACK / STRIKE / RETURN / HOLD. Deterministic safety gate; agent never touches actuators.
       icon brain
+  order asc
+theme
+  palette #0a84ff #18a999 #ff9f1c #7c4dff
 `
   },
   {
@@ -714,29 +691,37 @@ infographic hierarchy-mindmap-level-gradient-rounded-rect
 data
   root
     label THIRD IRIS stack
+    icon cpu
     children
       - label Perception
+        icon eye
         children
           - label YOLO26-seg fine-tuned
           - label ByteTrack / BoT-SORT + Re-ID
       - label Guidance
+        icon navigation
         children
           - label Standoff law + 3D Kalman
           - label PN strike guidance
           - label Depth-as-LiDAR avoidance
       - label Localization
+        icon compass
         children
           - label VIO RGB-D + IMU
           - label Mag yaw aid
           - label PX4 EKF2 vision fusion
       - label Learned pilot
+        icon brain
         children
           - label Behavior cloning
           - label PPO fine-tune
       - label Ground station
+        icon monitor
         children
           - label Click-to-lock web UI
           - label MAVLink / RTSP sources
+theme
+  palette #0a84ff #18a999 #ff9f1c #7c4dff #2a9d8f
 `
   },
 ];
