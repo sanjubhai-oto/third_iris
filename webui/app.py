@@ -41,8 +41,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sources import VideoReceiver, MavlinkReceiver, VIDEO_PROTOS, TELEM_PROTOS  # noqa: E402
 
 TRACKER = str(REPO / "perception" / "trackers" / "botsort_uav.yaml")  # BoT-SORT+ReID+GMC (moving cam)
-# default = sim-trained weights; override with UAV_MODEL for real-camera tests (e.g. uav_real/best.pt)
-MODEL = os.environ.get("UAV_MODEL", str(REPO / "runs/train/airsim_drone/weights/best.pt"))
+# Pick the best available weights: newest diverse-trained > real-trained > sim. UAV_MODEL overrides.
+def _best_weights():
+    for cand in ("runs/train/uav_diverse/weights/best.pt",
+                 "runs/train/uav_real/weights/best.pt",
+                 "runs/train/airsim_drone/weights/best.pt"):
+        if (REPO / cand).exists():
+            return str(REPO / cand)
+    return str(REPO / "runs/train/airsim_drone/weights/best.pt")
+MODEL = os.environ.get("UAV_MODEL", _best_weights())
 EGO_HOME = np.array([0.0, 0.0, 0.0]); TARGET_HOME = np.array([8.0, 0.0, 0.0])
 HFOV = 90.0; LEAD_T = 0.2; DB = 0.03; K_YR = 2.0; YR_MAX = 40.0  # proportional yaw-RATE, no integral
 

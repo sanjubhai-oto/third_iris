@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import time
 from collections import deque
@@ -36,7 +37,8 @@ from guidance import (Vec3KF, target_from_vision, target_from_vision_cam, stando
                       vfov_from_hfov, look_at_angles, camera_rel_quat, euler_R, R_to_quat)
 from smooth_control import ImageKalman          # noqa: E402  image-space predictor (coast through dropouts)
 
-MODEL = str(REPO / "runs/train/airsim_drone/weights/best.pt")
+# sim eval defaults to the sim-trained weights (best for the AirSim target); UAV_MODEL overrides
+MODEL = os.environ.get("UAV_MODEL", str(REPO / "runs/train/airsim_drone/weights/best.pt"))
 TRACKER = str(REPO / "perception" / "trackers" / "botsort_uav.yaml")  # BoT-SORT+ReID+GMC (matches webui)
 EGO_HOME = np.array([0.0, 0.0, 0.0])
 TARGET_HOME = np.array([8.0, 0.0, 0.0])
