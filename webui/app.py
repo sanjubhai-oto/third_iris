@@ -454,7 +454,14 @@ def tracking_loop():
                 # FORWARD only when the range is trustworthy this frame; else FREEZE (loss-aware control
                 # -> the range channel is least reliable at loss, so a bad read can't surge us).
                 fwd = float(np.clip(0.8 * (range_m - gap), -eff_sp, eff_sp)) if range_ok else 0.0
-                vz_b = float(np.clip(2.2 * eyj, -2.5, 2.5))                      # center vertically
+                # vertical = image-centering + DEPTH-SCALED altitude match. ey alone barely climbs when the
+                # target gains altitude (FPV coupling) -> chaser looked static in alt. The metric height gap
+                # = range*tan(ey*VFOV/2) drives a decisive climb/descend proportional to the REAL altitude
+                # difference (same law proven in scenario_eval).
+                vfov = math.degrees(2 * math.atan((cyI / cxI) * math.tan(math.radians(HFOV / 2))))
+                el = math.radians(eyj * vfov / 2.0)
+                h_gap = float(np.clip(range_m, 2.0, 40.0)) * math.tan(el)        # +below / -above (image down+)
+                vz_b = float(np.clip(1.4 * eyj + 0.55 * h_gap, -3.5, 3.5))
                 bearing = math.degrees(math.atan(exj * math.tan(math.radians(HFOV / 2))))
                 yr = float(np.clip(K_YR * bearing, -YR_MAX, YR_MAX))             # center horizontally (yaw)
                 if G.get("avoid", True) and depth is not None:                   # forward brake on obstacle

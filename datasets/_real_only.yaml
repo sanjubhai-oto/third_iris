@@ -1,0 +1,7 @@
+# REAL UAV val only (mjolnir real quads) — for measuring real-world detector recall
+train:
+  - C:/Users/admin/uav-vio-track/datasets/realworld/mjolnir/valid/images
+val:
+  - C:/Users/admin/uav-vio-track/datasets/realworld/mjolnir/valid/images
+nc: 1
+names: ['drone']

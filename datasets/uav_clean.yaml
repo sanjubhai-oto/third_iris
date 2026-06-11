@@ -1,0 +1,9 @@
+# DE-CONTAMINATED: mjolnir real quads + AirSim synthetic ONLY (junk shahed dropped). 1 class.
+train:
+  - C:/Users/admin/uav-vio-track/datasets/realworld/mjolnir/train/images
+  - C:/Users/admin/uav-vio-track/datasets/airsim_drone/images/train
+val:
+  - C:/Users/admin/uav-vio-track/datasets/realworld/mjolnir/valid/images
+  - C:/Users/admin/uav-vio-track/datasets/airsim_drone/images/val
+nc: 1
+names: ['drone']
