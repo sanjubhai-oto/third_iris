@@ -57,6 +57,8 @@ def parse_args(argv=None):
     p.add_argument("--out", default=str(REPO_ROOT / "runs" / "track"), help="output project dir")
     p.add_argument("--name", default="exp", help="run name under --out")
     p.add_argument("--no-jsonl", action="store_true", help="do not dump per-frame track records")
+    p.add_argument("--max-frames", type=int, default=0,
+                   help="stop after N frames (0 = unlimited; needed for live webcam tests)")
     return p.parse_args(argv)
 
 
@@ -114,6 +116,8 @@ def main(argv=None):
     n_frames = n_dets = 0
     for frame_idx, r in enumerate(results):
         n_frames += 1
+        if args.max_frames and frame_idx >= args.max_frames:
+            break
         boxes = getattr(r, "boxes", None)
         if boxes is None or boxes.id is None and tracker:
             # tracker active but nothing tracked this frame

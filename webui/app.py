@@ -11,6 +11,8 @@ Run:  python webui/app.py    then open http://localhost:5000
 """
 from __future__ import annotations
 
+import os
+
 import math
 import random
 import threading
@@ -39,9 +41,68 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sources import VideoReceiver, MavlinkReceiver, VIDEO_PROTOS, TELEM_PROTOS  # noqa: E402
 
 TRACKER = str(REPO / "perception" / "trackers" / "botsort_uav.yaml")  # BoT-SORT+ReID+GMC (moving cam)
-MODEL = str(REPO / "runs/train/airsim_drone/weights/best.pt")
+# default = sim-trained weights; override with UAV_MODEL for real-camera tests (e.g. uav_real/best.pt)
+MODEL = os.environ.get("UAV_MODEL", str(REPO / "runs/train/airsim_drone/weights/best.pt"))
 EGO_HOME = np.array([0.0, 0.0, 0.0]); TARGET_HOME = np.array([8.0, 0.0, 0.0])
 HFOV = 90.0; LEAD_T = 0.2; DB = 0.03; K_YR = 2.0; YR_MAX = 40.0  # proportional yaw-RATE, no integral
+
+
+class TemplateTracker:
+    """Dependency-free single-object tracker (NCC template matching) for MANUAL lock — lets the
+    operator lock+follow ANY target by clicking it, even when the YOLO detector doesn't fire. Uses
+    only base OpenCV (cv2.matchTemplate); the contrib CSRT/KCF trackers aren't in this build."""
+
+    def __init__(self):
+        self.tmpl = None; self.w = 0; self.h = 0; self.cx = 0.0; self.cy = 0.0
+
+    def init(self, frame, bbox):
+        x, y, w, h = (int(v) for v in bbox)
+        g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        x = max(0, x); y = max(0, y); w = min(w, g.shape[1]-x); h = min(h, g.shape[0]-y)
+        if w < 8 or h < 8:
+            return False
+        self.tmpl = g[y:y+h, x:x+w].copy(); self.w, self.h = w, h
+        self.cx, self.cy = x + w/2.0, y + h/2.0
+        return True
+
+    def _bbox(self):
+        return (self.cx - self.w/2.0, self.cy - self.h/2.0, float(self.w), float(self.h))
+
+    def update(self, frame):
+        if self.tmpl is None:
+            return False, self._bbox()
+        g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        Hh, Ww = g.shape[:2]
+        sw, sh = self.w, self.h                       # search ±one template size around last center
+        x0 = int(max(0, self.cx - self.w/2 - sw)); y0 = int(max(0, self.cy - self.h/2 - sh))
+        x1 = int(min(Ww, self.cx + self.w/2 + sw)); y1 = int(min(Hh, self.cy + self.h/2 + sh))
+        roi = g[y0:y1, x0:x1]
+        if roi.shape[0] < self.h or roi.shape[1] < self.w:
+            return False, self._bbox()
+        r = cv2.matchTemplate(roi, self.tmpl, cv2.TM_CCOEFF_NORMED)
+        _, mx, _, ml = cv2.minMaxLoc(r)
+        if mx < 0.35:                                 # lost (low correlation)
+            return False, self._bbox()
+        nx = x0 + ml[0]; ny = y0 + ml[1]
+        self.cx = nx + self.w/2.0; self.cy = ny + self.h/2.0
+        patch = g[int(ny):int(ny)+self.h, int(nx):int(nx)+self.w]
+        if patch.shape == self.tmpl.shape:            # slow template update -> track appearance change
+            self.tmpl = cv2.addWeighted(self.tmpl, 0.85, patch, 0.15, 0)
+        return True, self._bbox()
+
+
+def make_tracker():
+    """Generic visual tracker for MANUAL lock: contrib CSRT/KCF if present, else the template tracker."""
+    for path in ("TrackerCSRT_create", "legacy.TrackerCSRT_create",
+                 "TrackerKCF_create", "legacy.TrackerKCF_create"):
+        try:
+            obj = cv2
+            for part in path.split("."):
+                obj = getattr(obj, part)
+            return obj()
+        except Exception:
+            continue
+    return TemplateTracker()
 
 app = Flask(__name__)
 LOCK = threading.Lock()
@@ -217,6 +278,7 @@ def tracking_loop():
     strike_tkf = Vec3KF(q=2.0, r=0.5)     # target estimator for the strike intercept
     strike_box = None; strike_msg = "--"; strike_car = None  # selected target box / status / car name
     state = "DETECT"; locked_id = None; lost = 0; miss = 0; shadows = 0; i_yaw = 0.0
+    manual_tk = None                        # OpenCV tracker for MANUAL (detector-independent) lock
     prev_cmd = None; A_MAX = 2.4           # ego accel limit -> steady (low-tilt) camera platform
     prev_yaw = None; YAW_SLEW = 65.0       # yaw setpoint slew limit (deg/s) -> balanced smooth/keep-up
     vf_s = None; trail = deque(maxlen=60)  # ~5s at 12fps
@@ -275,6 +337,12 @@ def tracking_loop():
         if b is not None and len(b):
             for i in range(len(b)):
                 x1, y1, x2, y2 = b.xyxy[i].tolist()
+                # MAX-SIZE GATE: a real UAV target is SMALL in frame. Reject implausible whole-frame
+                # boxes (low-confidence domain-gap garbage that marks the entire frame instead of the
+                # drone). A box wider/taller than most of the frame, or covering a big area, is not a drone.
+                bw = x2 - x1; bh = y2 - y1
+                if bw > 0.55 * W or bh > 0.60 * H or (bw * bh) > 0.22 * W * H:
+                    continue
                 _, od = is_real(depth, x1, y1, x2, y2, W, H)  # keep depth only (for range)
                 real = True  # shadow filtering REMOVED -> detect & lock all UAVs
                 tid = int(b.id[i]) if b.id is not None else -1
@@ -294,19 +362,29 @@ def tracking_loop():
 
         # ---- handle UI commands ----
         if G["clear"]:
-            G["clear"] = False; locked_id = None; state = "DETECT"; kf.reset(); tkf.reset(); trail.clear()
+            G["clear"] = False; locked_id = None; manual_tk = None; state = "DETECT"; kf.reset(); tkf.reset(); trail.clear()
         click = G["click"]
         if click is not None:
             G["click"] = None
             px, py = click[0] * W, click[1] * H
             inside = [d for d in real_dets if d["box"][0] <= px <= d["box"][2] and d["box"][1] <= py <= d["box"][3]]
-            cand = inside or real_dets
-            if cand:
-                sel = min(cand, key=lambda d: (d["cx"]-px)**2 + (d["cy"]-py)**2)
-                locked_id = sel["id"]; state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None
+            if inside:                                   # clicked a detection -> lock that track
+                sel = min(inside, key=lambda d: (d["cx"]-px)**2 + (d["cy"]-py)**2)
+                locked_id = sel["id"]; manual_tk = None
+                state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None
                 kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
                 if rf is not None:
                     rf.reset()
+            else:                                        # clicked empty space -> MANUAL lock (no detector needed)
+                w0 = max(48.0, 0.12 * W); h0 = max(48.0, 0.12 * H)
+                x0 = min(max(0.0, px - w0/2), W - w0); y0 = min(max(0.0, py - h0/2), H - h0)
+                manual_tk = make_tracker()
+                if manual_tk is not None:
+                    manual_tk.init(scene, (int(x0), int(y0), int(w0), int(h0)))
+                    locked_id = "MANUAL"; state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None
+                    kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
+                    if rf is not None:
+                        rf.reset()
 
         # ---- STRIKE: select a vehicle target, arm/abort ----
         sclick = G["strike_click"]
@@ -387,10 +465,28 @@ def tracking_loop():
                 strike_msg = "target lost"; G["strike_armed"] = False; state = "DETECT"
         elif state == "TRACK":
             # find the locked target among current detections (by track id, else nearest real det)
-            match = [d for d in real_dets if d["id"] == locked_id]
-            # keep vision active even if ByteTrack reassigns the id: fall back to the most-centered detection
-            cur_det = match[0] if match else (min(real_dets, key=lambda d: (d["cx"]-cxI)**2 + (d["cy"]-cyI)**2)
-                                              if real_dets else None)
+            if manual_tk is not None:
+                # MANUAL lock: a generic visual tracker follows the clicked target with NO detector.
+                ok_t, bb = manual_tk.update(scene)
+                if ok_t:
+                    bx_, by_, bw_, bh_ = bb
+                    mcx, mcy = bx_ + bw_/2.0, by_ + bh_/2.0
+                    od = None
+                    if depth is not None:
+                        yy = int(min(max(mcy, 0), H-1)); xx = int(min(max(mcx, 0), W-1))
+                        dz = float(depth[yy, xx]); od = dz if dz > 0.3 else None
+                    cur_det = {"box": (bx_, by_, bx_+bw_, by_+bh_), "cx": mcx, "cy": mcy,
+                               "conf": 1.0, "id": "MANUAL", "real": True, "depth": od}
+                    lost = 0
+                else:
+                    cur_det = None; lost += 1
+                    if lost > 30:                        # ~2s without re-acquire -> drop the manual lock
+                        manual_tk = None; state = "DETECT"; locked_id = None
+            else:
+                match = [d for d in real_dets if d["id"] == locked_id]
+                # keep vision active even if ByteTrack reassigns the id: fall back to the most-centered detection
+                cur_det = match[0] if match else (min(real_dets, key=lambda d: (d["cx"]-cxI)**2 + (d["cy"]-cyI)**2)
+                                                  if real_dets else None)
             mode = G["mode"]; sp = float(G["speed"])
             VFOV = vfov_from_hfov(HFOV, W, H)
             # ---- build a TARGET-POSITION measurement (world NED) from the chosen source ----
@@ -523,6 +619,11 @@ def tracking_loop():
             else:
                 cv2.rectangle(ann, (x1, y1), (x2, y2), (255, 200, 0), 1)
                 cv2.putText(ann, f"id{d['id']} {d['conf']:.2f}", (x1, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,200,0), 1)
+        # MANUAL lock box (not in 'dets' — drawn from the generic tracker)
+        if state == "TRACK" and locked_id == "MANUAL" and cur_det is not None:
+            x1, y1, x2, y2 = (int(v) for v in cur_det["box"])
+            cv2.rectangle(ann, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(ann, "MANUAL LOCK", (x1, y1-6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
         # vehicle (strike) detections + selected target
         for d in vehicles:
             x1, y1, x2, y2 = (int(v) for v in d["box"])
@@ -549,7 +650,7 @@ def tracking_loop():
             cv2.putText(ann, f"AVOID OBSTACLE  clearance={clearance_m}m", (10, 56),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         if state == "DETECT":
-            cv2.putText(ann, "DETECT - click a target box to LOCK", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,165,255), 2)
+            cv2.putText(ann, "DETECT - click a box to LOCK | click empty space = MANUAL lock", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,165,255), 2)
         else:
             cv2.putText(ann, f"TRACK [{G['mode']}/{source}] gap={gap:.0f}m range={(range_m or 0):.1f}m", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0,255,0), 2)
