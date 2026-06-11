@@ -694,6 +694,11 @@ def tracking_loop():
                         "center_err": center_err,
                         "ego_n": round(ego[0], 1), "ego_e": round(ego[1], 1), "ego_d": round(ego[2], 1),
                         "n_detections": len(real_dets), "vision_rate": round(100*sum(vis_hist)/max(1,len(vis_hist))),
+                        # TEAM awareness: every drone tracked this frame (ByteTrack persistent IDs + norm pos)
+                        "n_targets": len(real_dets),
+                        "targets": [{"id": d["id"], "conf": round(d["conf"], 2),
+                                     "cx": round(d["cx"]/W, 3), "cy": round(d["cy"]/H, 3)}
+                                    for d in sorted(real_dets, key=lambda d: -d["conf"])[:12]],
                         "shadows": shadows, "fps": round(fps, 1),
                         "mode": G["mode"], "source": source, "reached": reached, "speed": round(float(G["speed"]), 1),
                         "video_src": G["video"]["proto"], "telem_src": G["telem_src"]["proto"],
