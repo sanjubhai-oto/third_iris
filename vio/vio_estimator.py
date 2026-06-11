@@ -153,11 +153,15 @@ def ransac_rigid(P, Q, iters=60, tau=0.10, rng=None):
 class VIOEstimator:
     """RGB-D + IMU odometry. Anchor to GPS when available; free-run (dead-reckon) when jammed."""
 
-    def __init__(self, hfov_deg=90.0, width=1280, height=720, max_depth=45.0, backend="umeyama"):
+    def __init__(self, hfov_deg=90.0, width=1280, height=720, max_depth=45.0, backend="umeyama",
+                 vo_depth_max=35.0):
         self.fx = (width / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
         self.fy = self.fx
         self.cx = width / 2.0; self.cy = height / 2.0
         self.max_depth = max_depth
+        # VO correspondences use only nearer depth: depth noise grows ~quadratically with range, so far
+        # points poison the 3D-3D fit. Detection/range can still use the full max_depth elsewhere.
+        self.vo_depth_max = min(vo_depth_max, max_depth)
         # VO front-end: "umeyama" = our LK+RANSAC 3D-3D (validated); "open3d" = proven Open3D RGB-D
         # direct odometry (Steinbrücker/Park) if installed. Falls back to umeyama if open3d missing.
         self.backend = backend if (backend != "open3d" or _HAS_O3D) else "umeyama"
@@ -176,17 +180,47 @@ class VIOEstimator:
         self.coast = 0                                # consecutive VO-failure frames
         self.rng = np.random.default_rng(0)
         self.mag_offset = None                        # calibrated (true_yaw - raw_mag_heading) at anchor
+        self.gyro_bias = np.zeros(3)                  # estimated during near-static frames (ZUPT-style)
+        self.baro_ref = None                          # baro altitude captured at last anchor
+        self.anchor_z = 0.0                           # world-NED z (down+) at last anchor
 
     # ---- anchoring (called while GPS is available) ----
     def anchor(self, pos, quat):
         self.p = np.asarray(pos, float).copy()
         self.q = quat_norm(np.asarray(quat, float))
         self.v[:] = 0.0
+        self.anchor_z = float(self.p[2])
 
     def calibrate_mag(self, mag_body):
         """Calibrate the compass offset against the (truth-anchored) attitude — call while GPS is on."""
         r, p, y = rpy_of(self.q)
         self.mag_offset = _wrap(y - mag_heading(mag_body, r, p))
+
+    def calibrate_baro(self, baro_alt):
+        """Pin the barometric reference to the (truth-anchored) altitude — call while GPS is on.
+
+        Afterwards a baro altitude reading constrains world z (down+) to anchor_z - (alt - baro_ref),
+        which removes the vertical channel from the dead-reckoning drift (gravity is observable, so this
+        is a cheap, high-value 1-D update — see VINS observability)."""
+        self.baro_ref = float(baro_alt)
+        self.anchor_z = float(self.p[2])
+
+    def _apply_gravity(self, accel, k=0.04):
+        """Pin roll/pitch to the accelerometer gravity vector when linear accel is small.
+
+        AirSim accel includes gravity (reads ~ -g in body at hover), so at low net acceleration the
+        measured specific force points along world-up in body. Roll/pitch are observable from it; yaw is
+        not. Blending bounds tilt drift and stops accel error leaking into the visual yaw channel."""
+        a = np.asarray(accel, float)
+        an = float(np.linalg.norm(a))
+        if an < 1e-3 or abs(an - 9.81) > 1.8:        # only trust accel as gravity near-static
+            return
+        g_body = -a / an                              # world-down direction expressed in body
+        roll_m = math.atan2(g_body[1], g_body[2])
+        pitch_m = math.atan2(-g_body[0], math.hypot(g_body[1], g_body[2]))
+        r, p, y = rpy_of(self.q)
+        self.q = quat_norm(euler_to_quat(r + k * _wrap(roll_m - r),
+                                         p + k * _wrap(pitch_m - p), y))
 
     def _apply_mag(self, mag_body, k=0.06):
         """Correct yaw toward the magnetometer heading (bounds gyro yaw drift). roll/pitch untouched."""
@@ -196,13 +230,14 @@ class VIOEstimator:
         mag_y = _wrap(mag_heading(mag_body, r, p) + self.mag_offset)
         self.q = quat_norm(euler_to_quat(r, p, y + k * _wrap(mag_y - y)))
 
-    def _backproject(self, pts, depth):
+    def _backproject(self, pts, depth, zmax=None):
         """pts (N,2) pixel -> (valid_mask, P (M,3) camera-frame 3D)."""
+        zmax = self.max_depth if zmax is None else zmax
         u = pts[:, 0]; v = pts[:, 1]
         ui = np.clip(np.round(u).astype(int), 0, depth.shape[1] - 1)
         vi = np.clip(np.round(v).astype(int), 0, depth.shape[0] - 1)
         Z = depth[vi, ui]                            # nearest-neighbour (avoid edge mixing)
-        ok = (Z > 0.3) & (Z < self.max_depth) & np.isfinite(Z)
+        ok = (Z > 0.3) & (Z < zmax) & np.isfinite(Z)
         X = (u - self.cx) * Z / self.fx
         Y = (v - self.cy) * Z / self.fy
         return ok, np.stack([X, Y, Z], axis=1)
@@ -230,23 +265,32 @@ class VIOEstimator:
         except Exception:
             return None
 
-    def update(self, gray, depth, imu, dt, mag=None):
+    def update(self, gray, depth, imu, dt, mag=None, baro_alt=None):
         """Advance the estimate one frame. imu = (accel_body(3), gyro_body(3)); mag = body magnetometer
-        vector (3) or None. Returns pose dict.
+        vector (3) or None; baro_alt = barometric altitude (m) or None. Returns pose dict.
 
         While GPS is available the caller should still run this (to keep features warm) and then call
         anchor(); while jammed, the returned p/q is the dead-reckoned estimate. The magnetometer (when
         provided + calibrated) bounds yaw drift.
         """
         dt = float(max(1e-3, min(0.3, dt)))
-        # ---- IMU: propagate attitude from gyro, then correct yaw with the magnetometer ----
+        # ---- IMU: propagate attitude from (bias-corrected) gyro, pin roll/pitch to gravity, then
+        #      correct yaw with the magnetometer if present ----
         if imu is not None:
             accel = np.asarray(imu[0], float); gyro = np.asarray(imu[1], float)
-            self.q = quat_norm(quat_mul(self.q, quat_from_gyro(gyro, dt)))
+            # near-static -> learn gyro bias (ZUPT-style) and trust accel as gravity
+            an = float(np.linalg.norm(accel)); wn = float(np.linalg.norm(gyro))
+            near_static = wn < 0.06 and abs(an - 9.81) < 0.6
+            if near_static:
+                self.gyro_bias = 0.98 * self.gyro_bias + 0.02 * gyro
+            self.q = quat_norm(quat_mul(self.q, quat_from_gyro(gyro - self.gyro_bias, dt)))
+            self._apply_gravity(accel)               # bounds roll/pitch (yaw stays gyro/mag driven)
             if mag is not None:
                 self._apply_mag(mag)
+            rot_rate = wn                            # body angular-rate magnitude (rad/s)
         else:
             accel = None
+            rot_rate = 0.0
         R_wb = quat_to_R(self.q)
         R_wc = R_wb @ R_BC                            # world <- camera-optical
 
@@ -266,8 +310,8 @@ class VIOEstimator:
                 good = (st.flatten() == 1) & (st2.flatten() == 1) & (fb < 1.5)
                 a = p0.reshape(-1, 2)[good]; b = p1.reshape(-1, 2)[good]
                 if len(a) >= 8:
-                    okA, P = self._backproject(a, self.prev_depth)
-                    okB, Q = self._backproject(b, depth)
+                    okA, P = self._backproject(a, self.prev_depth, zmax=self.vo_depth_max)
+                    okB, Q = self._backproject(b, depth, zmax=self.vo_depth_max)
                     m = okA & okB
                     P = P[m]; Q = Q[m]
                     if len(P) >= 8:
@@ -278,8 +322,14 @@ class VIOEstimator:
         # ---- REJECT-AND-COAST GATE: accept the VO step only if it is finite, within a plausible
         #      per-frame speed, AND consistent with the smooth predicted motion. One bad (sky / low
         #      texture) frame otherwise corrupts the whole trajectory -> this is what bounds the drift.
+        # ROTATION GATE: under fast rotation the optical flow is rotation-dominated, so the
+        # translation-only 3D-3D fit returns a spurious displacement that can sail through the speed
+        # gate and corrupt the trajectory. Reject VO while spinning and just hold position (turns are
+        # flown as hovering yaw, so zero translation is the correct prior).
+        ROT_GATE = 0.25                                          # rad/s (~14 deg/s)
+        spinning = rot_rate > ROT_GATE
         gate_ok = False
-        if vo_disp_world is not None and np.all(np.isfinite(vo_disp_world)):
+        if not spinning and vo_disp_world is not None and np.all(np.isfinite(vo_disp_world)):
             implied_speed = float(np.linalg.norm(vo_disp_world)) / dt
             predicted = self.v * dt                              # where the smooth motion expects us
             dev = float(np.linalg.norm(vo_disp_world - predicted))
@@ -290,14 +340,23 @@ class VIOEstimator:
             self.v = 0.6 * self.v + 0.4 * (vo_disp_world / dt)  # smoothed velocity estimate
             self.last_vo_ok = True; self.coast = 0
         else:
-            # VO rejected/failed -> coast on IMU accel (gravity-compensated), short horizon only
+            # VO rejected/failed -> coast on IMU accel (gravity-compensated), short horizon only;
+            # but while spinning, don't dead-reckon accel either -> just hold and bleed velocity.
             self.last_vo_ok = False; self.coast += 1
-            if accel is not None and self.coast < 12:
+            if accel is not None and not spinning and self.coast < 12:
                 a_world = R_wb @ accel + G_NED
                 self.v = self.v + a_world * dt
                 self.p = self.p + self.v * dt
             else:
                 self.v *= 0.9                                    # bleed off; don't fly away on garbage
+
+        # ---- barometer altitude fusion: pin world z (down+) to the calibrated baro reference. Vertical
+        #      is observable, so this removes the z channel from the dead-reckoning drift entirely. ----
+        if baro_alt is not None and self.baro_ref is not None:
+            z_meas = self.anchor_z - (float(baro_alt) - self.baro_ref)
+            kz = 0.15
+            self.p[2] = (1.0 - kz) * self.p[2] + kz * z_meas
+            self.v[2] *= (1.0 - kz)
 
         self.prev_gray = gray
         self.prev_depth = depth

@@ -23,7 +23,7 @@ import cosysairsim as airsim
 REPO = Path(__file__).resolve().parents[1]
 import sys
 sys.path.insert(0, str(REPO / "vio"))
-from vio_estimator import VIOEstimator      # noqa: E402
+from vio_estimator import VIOEstimator, yaw_of, rpy_of      # noqa: E402
 
 EGO_HOME = np.array([0.0, 0.0, 0.0])
 OP_ALT = 18.0
@@ -63,6 +63,10 @@ def mag_of(ac):
     return np.array([m.x_val, m.y_val, m.z_val])
 
 
+def baro_of(ac):
+    return float(ac.getBarometerData(vehicle_name="Ego").altitude)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-mag", action="store_true", help="disable magnetometer yaw-aid (to compare)")
@@ -90,13 +94,15 @@ def main():
         if scene is None:
             time.sleep(0.02); continue
         gray = cv2.cvtColor(scene, cv2.COLOR_BGR2GRAY)
-        est.update(gray, depth, imu_of(ac), dt, mag=mag_of(ac) if use_mag else None)
+        est.update(gray, depth, imu_of(ac), dt, mag=mag_of(ac) if use_mag else None, baro_alt=baro_of(ac))
         tp, tq = truth(ac); est.anchor(tp, tq)
         if use_mag:
             est.calibrate_mag(mag_of(ac))
+        est.calibrate_baro(baro_of(ac))            # pin baro reference while GPS is on
         ac.moveByVelocityAsync(0, 0, 0, 0.2, vehicle_name="Ego")
 
     start = est.p.copy()
+    hold_yaw = math.degrees(yaw_of(est.q))         # steady heading: hold prime yaw for the whole run
     # square + an altitude change, world-NED, relative to where we are now (GPS LAST-KNOWN)
     wps = [start + np.array([14, 0, 0]),
            start + np.array([14, 14, 0]),
@@ -106,32 +112,50 @@ def main():
     print("[NAV] GPS JAMMED — navigating on VIO only", flush=True)
 
     results = []
-    KP = 0.5; VMAX = 4.0; ARRIVE = 1.8; A_MAX = 2.0   # gentler gain + accel limit -> smooth, no pitch shake
+    # Fixed heading the whole run (proven: pure-translation optical flow keeps VO healthy). Gentle
+    # speeds + hard accel limit -> smooth, steady attitude. DEBUG=1 prints a per-frame trace so we can
+    # see exactly where/why any leg diverges (est vs truth, vo_ok, coast, drone pitch/roll).
+    import os
+    DEBUG = os.environ.get("NAV_DEBUG") == "1"
+    KP = 0.30; VMAX = 2.5; ARRIVE = 1.5; A_MAX = 1.0; BRAKE_R = 4.0; WP_TIMEOUT = 28.0
+    ymode = airsim.YawMode(False, hold_yaw)
     vcmd = np.zeros(3)
     for wp, nm in zip(wps, names):
-        wt0 = time.time()
+        wt0 = time.time(); fr = 0
         while True:
             now = time.time(); dt = now - last; last = now
             scene, depth = grab(ac)
             if scene is None:
                 time.sleep(0.02); continue
             gray = cv2.cvtColor(scene, cv2.COLOR_BGR2GRAY)
-            est.update(gray, depth, imu_of(ac), dt, mag=mag_of(ac) if use_mag else None)
+            out = est.update(gray, depth, imu_of(ac), dt,
+                             mag=mag_of(ac) if use_mag else None, baro_alt=baro_of(ac))
             err_vec = wp - est.p
-            v_raw = np.clip(KP * err_vec, -VMAX, VMAX)
-            v_lp = 0.4 * v_raw + 0.6 * vcmd                              # low-pass
-            vcmd = vcmd + np.clip(v_lp - vcmd, -A_MAX * dt, A_MAX * dt)  # accel limit -> smooth pitch
+            dist_xy = float(np.hypot(err_vec[0], err_vec[1]))
+            brake = min(1.0, (dist_xy + abs(err_vec[2])) / BRAKE_R)      # ease in near the waypoint
+            v_raw = np.clip(KP * err_vec, -VMAX, VMAX) * brake
+            v_lp = 0.2 * v_raw + 0.8 * vcmd                              # heavy low-pass
+            vcmd = vcmd + np.clip(v_lp - vcmd, -A_MAX * dt, A_MAX * dt)  # hard accel limit -> gentle bank
+            # SLOW DOWN when VO is lost: a frozen estimate + full speed = runaway. Crawling while
+            # dead-reckoning bounds the position error and gives VO a chance to re-acquire.
+            if out["coast"] > 6:
+                vcmd *= 0.4
             v = vcmd
-            yaw_deg = math.degrees(math.atan2(err_vec[1], err_vec[0])) if np.hypot(err_vec[0], err_vec[1]) > 1.0 else None
-            ymode = airsim.YawMode(False, yaw_deg) if yaw_deg is not None else airsim.YawMode(False, 0)
             ac.moveByVelocityAsync(float(v[0]), float(v[1]), float(v[2]), 0.5,
                                    yaw_mode=ymode, vehicle_name="Ego")
+            fr += 1
+            if DEBUG and fr % 8 == 0:
+                tp, tq = truth(ac)
+                rr, pp, yy = (math.degrees(x) for x in rpy_of(tq))
+                print(f"    [{nm}] est=({est.p[0]:5.1f},{est.p[1]:5.1f},{est.p[2]:5.1f}) "
+                      f"true=({tp[0]:5.1f},{tp[1]:5.1f},{tp[2]:5.1f}) drift={np.linalg.norm(est.p-tp):5.2f} "
+                      f"vo_ok={out['vo_ok']} coast={out['coast']} roll={rr:5.1f} pitch={pp:5.1f}", flush=True)
             vio_dist = float(np.linalg.norm(wp - est.p))      # what the drone THINKS
-            if vio_dist < ARRIVE or time.time() - wt0 > 18.0:
+            if vio_dist < ARRIVE or time.time() - wt0 > WP_TIMEOUT:
                 tp, _ = truth(ac)
                 true_err = float(np.linalg.norm(tp - wp))     # the REAL accuracy
                 vio_drift = float(np.linalg.norm(est.p - tp))
-                timeout = time.time() - wt0 > 18.0
+                timeout = time.time() - wt0 > WP_TIMEOUT
                 results.append((nm, true_err, vio_drift, timeout))
                 print(f"  reached {nm}: VIO thinks d={vio_dist:.2f}m | TRUE error={true_err:.2f}m | "
                       f"VIO drift={vio_drift:.2f}m{' (TIMEOUT)' if timeout else ''}", flush=True)

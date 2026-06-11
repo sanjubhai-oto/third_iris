@@ -55,6 +55,10 @@ def imu_of(ac):
     return a, w
 
 
+def baro_of(ac):
+    return float(ac.getBarometerData(vehicle_name="Ego").altitude)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", choices=["umeyama", "open3d"], default="umeyama")
@@ -76,8 +80,12 @@ def main():
     log = []                                   # (t, phase, drift, true_dist, vo_ok)
     dist = 0.0; prev_true = p0.copy()
 
-    # a known path: gentle box + slow climb, FIXED heading (minimise yaw to isolate translation VO)
-    legs = [(2.0, 0.0, -0.3), (0.0, 2.0, 0.0), (-2.0, 0.0, 0.3), (0.0, -2.0, 0.0)]  # vN,vE,vD m/s
+    # a known path: gentle box + slow climb, FIXED heading (minimise yaw to isolate translation VO).
+    # Velocity targets are low-passed + accel-limited so the airframe banks gently (smooth attitude
+    # also gives cleaner optical flow).
+    legs = [(1.5, 0.0, -0.25), (0.0, 1.5, 0.0), (-1.5, 0.0, 0.25), (0.0, -1.5, 0.0)]  # vN,vE,vD m/s
+    A_MAX = 0.8
+    vcmd = np.zeros(3)
 
     t0 = time.time()
     PRIME_S, JAM_S = 8.0, 22.0
@@ -85,20 +93,24 @@ def main():
     while time.time() - t0 < PRIME_S + JAM_S:
         now = time.time(); dt = now - last; last = now
         el = now - t0
-        leg = legs[int(el // 3) % len(legs)]
-        ac.moveByVelocityAsync(leg[0], leg[1], leg[2], 0.3, vehicle_name="Ego")
+        leg = np.array(legs[int(el // 4) % len(legs)], float)        # 4s legs, gentler turns
+        v_lp = 0.25 * leg + 0.75 * vcmd
+        vcmd = vcmd + np.clip(v_lp - vcmd, -A_MAX * dt, A_MAX * dt)
+        ac.moveByVelocityAsync(float(vcmd[0]), float(vcmd[1]), float(vcmd[2]), 0.3,
+                               yaw_mode=airsim.YawMode(False, 0), vehicle_name="Ego")
 
         scene, depth = grab(ac)
         if scene is None:
             time.sleep(0.02); continue
         gray = cv2.cvtColor(scene, cv2.COLOR_BGR2GRAY)
-        out = est.update(gray, depth, imu_of(ac), dt)
+        out = est.update(gray, depth, imu_of(ac), dt, baro_alt=baro_of(ac))
         tp, tq = truth(ac)
         dist += float(np.linalg.norm(tp - prev_true)); prev_true = tp
 
         gps_on = el < PRIME_S
         if gps_on:
             est.anchor(tp, tq)                  # GPS available -> keep VIO primed (zero drift)
+            est.calibrate_baro(baro_of(ac))     # pin baro reference while GPS is on
             phase = "PRIME"
         else:
             phase = "JAM"
