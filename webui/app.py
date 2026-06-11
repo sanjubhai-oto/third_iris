@@ -114,7 +114,9 @@ G = {"jpeg": None, "tel": {"state": "INIT"}, "gap": 12.0, "mode": "fused", "spee
      "avoid": True,                # depth-based obstacle avoidance (needs AirSim depth)
      "jammed": False,              # GPS jammed -> navigate on VIO (camera+IMU) instead of GPS
      # ground-vehicle strike (simulated intercept onto a selected car)
-     "strike_mode": False, "strike_click": None, "strike_armed": False, "abort_strike": False}
+     "strike_mode": False, "strike_click": None, "strike_armed": False, "abort_strike": False,
+     # dataset capture: while ON and a target is locked, save (frame, YOLO label) pairs for fine-tuning
+     "capture": False, "cap_n": 0}
 # guidance modes: location | vision | fused | vision_after_arrival
 # video protocols: airsim | rtsp | udp | http | device | file
 # telemetry protocols: airsim | mavlink_udp | mavlink_serial
@@ -606,6 +608,19 @@ def tracking_loop():
                                    yaw_mode=airsim.YawMode(True, yr_cmd), vehicle_name="Ego")
             yr_deg = yr_cmd
 
+        # ---- dataset capture: save (raw frame, YOLO label) from the active lock for fine-tuning ----
+        if G.get("capture") and state == "TRACK" and cur_det is not None and scene is not None:
+            cb = cur_det["box"]; bw = cb[2]-cb[0]; bh = cb[3]-cb[1]
+            if 4 < bw < 0.9*W and 4 < bh < 0.9*H:
+                cap_img = REPO / "datasets" / "realdrone" / "images"
+                cap_lbl = REPO / "datasets" / "realdrone" / "labels"
+                cap_img.mkdir(parents=True, exist_ok=True); cap_lbl.mkdir(parents=True, exist_ok=True)
+                fn = f"rd_{G['cap_n']:05d}"
+                cv2.imwrite(str(cap_img / (fn + ".jpg")), scene)
+                cxn = ((cb[0]+cb[2])/2)/W; cyn = ((cb[1]+cb[3])/2)/H; wn = bw/W; hn = bh/H
+                (cap_lbl / (fn + ".txt")).write_text(f"0 {cxn:.6f} {cyn:.6f} {wn:.6f} {hn:.6f}\n")
+                G["cap_n"] += 1
+
         # ---- annotate ----
         ann = scene.copy()
         for d in dets:
@@ -742,6 +757,12 @@ def set_mode():
 @app.route("/set_speed", methods=["POST"])
 def set_speed():
     G["speed"] = max(0.5, min(12.0, float(request.get_json(force=True)["speed"]))); return ("", 204)
+
+
+@app.route("/set_capture", methods=["POST"])
+def set_capture():
+    G["capture"] = bool(request.get_json(force=True).get("on", False))
+    return jsonify({"capture": G["capture"], "cap_n": G["cap_n"]})
 
 
 @app.route("/set_video_source", methods=["POST"])

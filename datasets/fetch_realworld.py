@@ -30,6 +30,17 @@ RW = REPO / "datasets" / "realworld"
 RF_DIR = RW / "roboflow_drone"
 WS, PROJ = "dronedetection-q7zbp", "drone-tracking-daayo"
 
+# Curated Roboflow Universe drone/FPV/UAV datasets -> merged into one 'drone' class so the detector
+# sees MANY drone types, angles, and backgrounds (incl. FPV racing quads + indoor), not just one drone.
+# (slug, workspace, project) — script tries each and skips any that fail to download.
+UNIVERSE = [
+    ("fpv-drone",     "object-detection-aw0vm", "fpv-drone-4posq"),   # FPV racing quads
+    ("drone-fpv",     "salf",                   "drone-fpv"),         # more FPV
+    ("drone-mixed",   "colleage-7thf7",         "drone-dataset-pw8lv"),  # ~1.9k mixed drones
+    ("drone-yolov5",  "uav-detection",          "drone-yolov5-b4787"),   # UAV detection
+    ("drone-track",   "dronedetection-q7zbp",   "drone-tracking-daayo"), # the original
+]
+
 
 def _force_single_class(root: Path) -> int:
     """Rewrite every YOLO label under root so the class id is 0 (single 'drone' class).
@@ -76,6 +87,31 @@ def fetch_roboflow(api_key: str, fmt: str = "yolov11") -> Path:
     return RF_DIR
 
 
+def fetch_universe(api_key: str, fmt: str = "yolov11"):
+    """Download EVERY curated Universe dataset into datasets/realworld/<slug>, single 'drone' class."""
+    from roboflow import Roboflow
+    rf = Roboflow(api_key=api_key)
+    ok = []
+    for slug, ws, proj in UNIVERSE:
+        dst = RW / slug
+        try:
+            project = rf.workspace(ws).project(proj)
+            versions = project.versions()
+            if not versions:
+                print(f"[skip] {ws}/{proj}: no versions"); continue
+            vnum = int(str(versions[-1].version).split("/")[-1])
+            if dst.exists():
+                shutil.rmtree(dst)
+            print(f"[get] {ws}/{proj} v{vnum} -> {dst}")
+            project.version(vnum).download(fmt, location=str(dst))
+            _force_single_class(dst)
+            ok.append(slug)
+        except Exception as e:
+            print(f"[skip] {ws}/{proj}: {e}")
+    print(f"[universe] downloaded {len(ok)}/{len(UNIVERSE)}: {ok}")
+    return ok
+
+
 def _splits(root: Path):
     found = {}
     for s in ("train", "valid", "val", "test"):
@@ -101,15 +137,17 @@ def _write_yaml(root: Path, out: Path):
 
 
 def combine():
-    """Build a combined data.yaml mixing real (roboflow) + synthetic AirSim into one train/val set."""
-    synth = REPO / "datasets" / "airsim_drone"
+    """Build a combined data.yaml from ALL datasets present: every datasets/realworld/* dataset (the
+    Universe drone/FPV mix + mjolnir), the synthetic AirSim set, and any captured realdrone frames."""
     sources = []
-    if (RF_DIR / "data.yaml").exists():
-        sources.append(RF_DIR)
-    if synth.exists():
-        sources.append(synth)
+    for d in sorted(RW.iterdir()) if RW.exists() else []:
+        if d.is_dir() and _splits(d):
+            sources.append(d)
+    for extra in (REPO / "datasets" / "airsim_drone", REPO / "datasets" / "realdrone"):
+        if extra.exists() and (_splits(extra) or (extra / "images").exists()):
+            sources.append(extra)
     if not sources:
-        raise SystemExit("[err] nothing to combine — run --roboflow first")
+        raise SystemExit("[err] nothing to combine — run --universe --api-key KEY first")
     out = REPO / "datasets" / "uav_real.yaml"
     # ultralytics accepts a list of image dirs for train/val
     trains, vals = [], []
@@ -117,6 +155,8 @@ def combine():
         s = _splits(src)
         if "train" in s:
             trains.append(s["train"].as_posix())
+        elif (src / "images").exists():            # flat dataset (e.g. captured realdrone) -> train
+            trains.append((src / "images").as_posix())
         for k in ("valid", "val", "test"):
             if k in s:
                 vals.append(s[k].as_posix()); break
@@ -132,21 +172,27 @@ def combine():
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--roboflow", action="store_true", help="download the Roboflow drone dataset")
+    p.add_argument("--roboflow", action="store_true", help="download the single original Roboflow dataset")
+    p.add_argument("--universe", action="store_true",
+                   help="download the CURATED multi-dataset drone/FPV/UAV mix (all angles/backgrounds)")
     p.add_argument("--api-key", default=None, help="Roboflow API key (free, from app.roboflow.com)")
     p.add_argument("--format", default="yolov11", help="roboflow export format")
-    p.add_argument("--combine", action="store_true", help="build combined real+synthetic data.yaml")
+    p.add_argument("--combine", action="store_true", help="build combined data.yaml from all datasets present")
     args = p.parse_args(argv)
 
+    if args.universe:
+        if not args.api_key:
+            raise SystemExit("[err] --universe needs --api-key (free from app.roboflow.com > settings)")
+        fetch_universe(args.api_key, args.format)
     if args.roboflow:
         if not args.api_key:
             raise SystemExit("[err] --roboflow needs --api-key (free from app.roboflow.com > settings)")
         fetch_roboflow(args.api_key, args.format)
     if args.combine:
         combine()
-    if not (args.roboflow or args.combine):
-        print("Det-Fly (real air-to-air, CC BY 4.0): https://github.com/Jake-WU/Det-Fly")
-        print("Run with --roboflow --api-key KEY  then  --combine")
+    if not (args.roboflow or args.universe or args.combine):
+        print("Get a free key at app.roboflow.com > Settings > API Key, then:")
+        print("  python datasets/fetch_realworld.py --universe --api-key KEY --combine")
 
 
 if __name__ == "__main__":
