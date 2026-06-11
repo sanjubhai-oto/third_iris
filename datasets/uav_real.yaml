@@ -1,0 +1,16 @@
+# Combined diverse drone detector — single class. Real FPV + mixed drones + mjolnir + AirSim synthetic.
+# 'shahed' (55k, flagged junk in uav_clean.yaml) is intentionally EXCLUDED so it can't dominate/poison.
+train:
+  - C:/Users/admin/uav-vio-track/datasets/realworld/drone-fpv/train/images
+  - C:/Users/admin/uav-vio-track/datasets/realworld/drone-mixed/train/images
+  - C:/Users/admin/uav-vio-track/datasets/realworld/drone-yolov5/train/images
+  - C:/Users/admin/uav-vio-track/datasets/realworld/fpv-drone/train/images
+  - C:/Users/admin/uav-vio-track/datasets/realworld/mjolnir/train/images
+  - C:/Users/admin/uav-vio-track/datasets/airsim_drone/images/train
+val:
+  - C:/Users/admin/uav-vio-track/datasets/realworld/drone-fpv/valid/images
+  - C:/Users/admin/uav-vio-track/datasets/realworld/drone-yolov5/valid/images
+  - C:/Users/admin/uav-vio-track/datasets/realworld/fpv-drone/valid/images
+  - C:/Users/admin/uav-vio-track/datasets/realworld/mjolnir/valid/images
+nc: 1
+names: ['drone']
