@@ -237,7 +237,7 @@ def main():
         last_range = float(args.gap)             # hold last good range during a dropout
         COAST_MAX = 6                            # frames to keep panning on prediction before declaring lost
         prev_yr = 0.0; prev_bfwd = 0.0           # body-servo command smoothing (anti-whip / steady cam)
-        YAW_ACC = 220.0                          # max yaw-rate change (deg/s^2) -> no violent whip on reversals
+        YAW_ACC = 170.0                          # max yaw-rate change (deg/s^2) -> no violent whip on reversals
         FWD_ACC = 6.0                            # forward accel cap: high enough to CHASE a receding target
                                                  # (low values lost it on recede), still bounds pitch a bit
         while time.time() - t0 < secs:
