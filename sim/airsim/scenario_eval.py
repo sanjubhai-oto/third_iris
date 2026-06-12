@@ -136,6 +136,17 @@ def pattern_velocity(name, t):
         return (0.0, 1.7 * math.sin(0.4 * t), -0.6 * math.sin(0.3 * t))
     if name == "recede_approach":  # range in/out — bidirectional gap hold
         return (1.6 * math.sin(0.20 * t), 0.0, 0.0)
+    if name == "spiral":           # orbit + range breathing + climb — combined lateral/range/vertical
+        w = 0.45
+        return (-4.5 * w * math.sin(w * t) + 0.8 * math.cos(0.12 * t),
+                4.5 * w * math.cos(w * t), -0.7 * math.sin(0.18 * t))
+    if name == "juke":             # sudden lateral dodges (step reversals) — sharpest yaw stress
+        s = 1.0 if (int(t) // 2) % 2 == 0 else -1.0
+        return (0.4 * math.sin(0.3 * t), 2.6 * s, -0.6 * math.sin(0.4 * t))
+    if name == "surge":            # fast recede then approach — hardest gap-hold / chase test
+        return (2.8 * math.sin(0.22 * t), 0.6 * math.cos(0.3 * t), 0.0)
+    if name == "dive":             # steep climb/descent dominated — vertical tracking stress
+        return (0.6 * math.sin(0.2 * t), 0.0, 1.6 * math.sin(0.28 * t))
     return (0.0, 0.0, 0.0)
 
 
@@ -356,8 +367,12 @@ def main():
                 tracking = imk.alive and imk.miss <= COAST_MAX
                 if tracking:
                     rng = last_range
-                    # forward holds the gap; eased off while coasting so a stale range can't surge us
-                    fwd = float(np.clip(0.8 * (rng - args.gap), -eff_speed, eff_speed)) * (0.4 if coasting else 1.0)
+                    # forward holds the gap; eased off while coasting so a stale range can't surge us.
+                    # Asymmetric gain: close IN gently, back OFF firmly when inside the gap -> never crowd
+                    # the target (over-closing throws it out of the FOV and looks like "jumping in").
+                    err_r = rng - args.gap
+                    kf = 0.6 if err_r > 0 else 1.3
+                    fwd = float(np.clip(kf * err_r, -eff_speed, eff_speed)) * (0.4 if coasting else 1.0)
                     vz_b = float(np.clip(2.2 * ey_s, -2.8, 2.8))
                     bearing = math.degrees(math.atan(ex_s * math.tan(math.radians(HFOV / 2))))
                     yaw_err = bearing
