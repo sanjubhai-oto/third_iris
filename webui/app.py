@@ -88,7 +88,7 @@ class TemplateTracker:
             return False, self._bbox()
         r = cv2.matchTemplate(roi, self.tmpl, cv2.TM_CCOEFF_NORMED)
         _, mx, _, ml = cv2.minMaxLoc(r)
-        if mx < 0.35:                                 # lost (low correlation)
+        if mx < 0.50:                                 # lost (low correlation) — strict, avoid tracking junk
             return False, self._bbox()
         nx = x0 + ml[0]; ny = y0 + ml[1]
         self.cx = nx + self.w/2.0; self.cy = ny + self.h/2.0
@@ -124,8 +124,9 @@ G = {"jpeg": None, "tel": {"state": "INIT"}, "gap": 12.0, "mode": "fused", "spee
      "strike_mode": False, "strike_click": None, "strike_armed": False, "abort_strike": False,
      # dataset capture: while ON and a target is locked, save (frame, YOLO label) pairs for fine-tuning
      "capture": False, "cap_n": 0,
-     # auto-lock the strongest UAV detection (no click); search = scan for a UAV then auto-lock it
-     "autolock": False, "search": False}
+     # auto-lock the strongest UAV detection (no click); search = scan for a UAV then auto-lock it;
+     # manual_mode = allow click-empty-space ROI lock (off by default so clicks don't accidentally manual-lock)
+     "autolock": False, "search": False, "manual_mode": False}
 # guidance modes: location | vision | fused | vision_after_arrival
 # video protocols: airsim | rtsp | udp | http | device | file
 # telemetry protocols: airsim | mavlink_udp | mavlink_serial
@@ -379,14 +380,17 @@ def tracking_loop():
             G["click"] = None
             px, py = click[0] * W, click[1] * H
             inside = [d for d in real_dets if d["box"][0] <= px <= d["box"][2] and d["box"][1] <= py <= d["box"][3]]
-            if inside:                                   # clicked a detection -> lock that track
-                sel = min(inside, key=lambda d: (d["cx"]-px)**2 + (d["cy"]-py)**2)
+            # snap: if the click is on OR near a detection, lock THAT detection (preferred over manual)
+            near = min(real_dets, key=lambda d: (d["cx"]-px)**2 + (d["cy"]-py)**2) if real_dets else None
+            near_ok = near is not None and math.hypot(near["cx"]-px, near["cy"]-py) < 0.10 * max(W, H)
+            if inside or near_ok:                        # lock the detected UAV
+                sel = min(inside, key=lambda d: (d["cx"]-px)**2 + (d["cy"]-py)**2) if inside else near
                 locked_id = sel["id"]; manual_tk = None
                 state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None
                 kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
                 if rf is not None:
                     rf.reset()
-            else:                                        # clicked empty space -> MANUAL lock (no detector needed)
+            elif G.get("manual_mode"):                   # empty click + MANUAL-LOCK mode ON -> ROI lock
                 w0 = max(48.0, 0.12 * W); h0 = max(48.0, 0.12 * H)
                 x0 = min(max(0.0, px - w0/2), W - w0); y0 = min(max(0.0, py - h0/2), H - h0)
                 manual_tk = make_tracker()
@@ -396,6 +400,7 @@ def tracking_loop():
                     kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
                     if rf is not None:
                         rf.reset()
+            # else: empty click with manual mode OFF -> ignored (no accidental manual lock / random yaw)
 
         # ---- AUTO-LOCK: when armed (or SEARCH is running), automatically lock the strongest UAV
         #      detection — no click needed. SEARCH scans until a UAV appears, then this locks it. ----
@@ -714,6 +719,7 @@ def tracking_loop():
                         "n_detections": len(real_dets), "vision_rate": round(100*sum(vis_hist)/max(1,len(vis_hist))),
                         # TEAM awareness: every drone tracked this frame (ByteTrack persistent IDs + norm pos)
                         "autolock": bool(G.get("autolock")), "search": bool(G.get("search")),
+                        "manual_mode": bool(G.get("manual_mode")),
                         "n_targets": len(real_dets),
                         "targets": [{"id": d["id"], "conf": round(d["conf"], 2),
                                      "cx": round(d["cx"]/W, 3), "cy": round(d["cy"]/H, 3)}
@@ -807,6 +813,13 @@ def search():
     # toggle SEARCH: scan for a UAV and auto-lock the first one found
     G["search"] = bool(request.get_json(force=True).get("on", not G.get("search")))
     return jsonify({"search": G["search"]})
+
+
+@app.route("/set_manual", methods=["POST"])
+def set_manual():
+    # enable manual ROI lock (click empty space). Off by default to avoid accidental manual locks.
+    G["manual_mode"] = bool(request.get_json(force=True).get("on", False))
+    return jsonify({"manual_mode": G["manual_mode"]})
 
 
 @app.route("/set_video_source", methods=["POST"])

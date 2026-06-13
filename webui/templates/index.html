@@ -296,11 +296,13 @@
           </div>
         </div>
         <div style="display:flex; gap:6px; margin-bottom:6px;">
-          <button class="btn" id="btnAuto" style="flex:1;">Auto-Lock UAV: OFF</button>
+          <button class="btn" id="btnAuto" style="flex:1;">Auto-Lock: OFF</button>
           <button class="btn" id="btnSearch" style="flex:1;">🔍 Search UAV</button>
+          <button class="btn" id="btnManual" style="flex:1;">Manual Lock: OFF</button>
         </div>
         <div style="font-size:11px; color:#7f8c9b; margin:-2px 0 8px;">
-          Auto-Lock: grab strongest UAV automatically · Search: scan &amp; lock first UAV found · or click a box / empty space to lock manually
+          Click a <b>detection box</b> to lock it (always). · <b>Auto-Lock</b>: grab strongest UAV automatically. ·
+          <b>Search</b>: scan &amp; lock first UAV found. · <b>Manual Lock ON</b>: click empty space to lock a region.
         </div>
         <button class="btn" id="btnClear">Clear Lock</button>
         <button class="btn danger" id="btnLand">Land</button>
@@ -419,6 +421,11 @@
       searchOn = t.search;
       btnSearch.textContent = searchOn ? "■ Searching… (stop)" : "🔍 Search UAV";
       btnSearch.classList.toggle("danger", searchOn);
+    }
+    if (typeof t.manual_mode === "boolean" && t.manual_mode !== manualOn) {
+      manualOn = t.manual_mode;
+      btnManual.textContent = "Manual Lock: " + (manualOn ? "ON" : "OFF");
+      btnManual.classList.toggle("danger", manualOn);
     }
 
     var lockedVal = document.querySelector('.val[data-k="locked"]');
@@ -564,6 +571,12 @@
     searchOn = !searchOn; postJson("/search", { on: searchOn });
     btnSearch.textContent = searchOn ? "■ Searching… (stop)" : "🔍 Search UAV";
     btnSearch.classList.toggle("danger", searchOn);
+  });
+  var manualOn = false, btnManual = document.getElementById("btnManual");
+  btnManual.addEventListener("click", function () {
+    manualOn = !manualOn; postJson("/set_manual", { on: manualOn });
+    btnManual.textContent = "Manual Lock: " + (manualOn ? "ON" : "OFF");
+    btnManual.classList.toggle("danger", manualOn);
   });
   btnLand.addEventListener("click", function () {
     if (confirm("Command vehicle to LAND?")) postAction("/land");
