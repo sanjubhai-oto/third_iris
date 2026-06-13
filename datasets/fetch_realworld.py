@@ -39,15 +39,44 @@ UNIVERSE = [
     ("drone-mixed",   "colleage-7thf7",         "drone-dataset-pw8lv"),  # ~1.9k mixed drones
     ("drone-yolov5",  "uav-detection",          "drone-yolov5-b4787"),   # UAV detection
     ("drone-track",   "dronedetection-q7zbp",   "drone-tracking-daayo"), # the original
+    # breadth: multi-class sets — class-aware normalize keeps ONLY drone-like classes; bird/plane
+    # frames become useful NEGATIVES (cut false positives). ~9.8k bird-vs-drone adds many angles/scales.
+    ("bird-vs-drone", "drone-detection-project", "drone-vs-bird-detection"),
+    ("bird-drone-2",  "antiuav-9-aniket",        "bird-and-drone"),
+    ("drone-det-a",   "drone-detection-g4d3g",   "drone-detection-a1tsf"),
 ]
+
+# class names that ARE the target (collapse to class 0); everything else (bird, airplane, helicopter,
+# person, ...) is DROPPED so it is not mislabelled as a drone and its frames serve as negatives.
+DRONE_WORDS = ("drone", "uav", "quad", "fpv", "multirotor", "multi-rotor", "vtol", "copter")
+
+
+def _drone_class_ids(root: Path):
+    """Return (set_of_drone_class_ids, n_classes) from data.yaml, or None if unknown -> assume single."""
+    y = root / "data.yaml"
+    if not y.exists():
+        return None
+    try:
+        import yaml
+        names = yaml.safe_load(y.read_text()).get("names")
+    except Exception:
+        return None
+    if isinstance(names, dict):
+        names = {int(k): v for k, v in names.items()}
+    elif isinstance(names, list):
+        names = {i: v for i, v in enumerate(names)}
+    else:
+        return None
+    keep = {i for i, nm in names.items() if any(w in str(nm).lower() for w in DRONE_WORDS)}
+    return keep, len(names)
 
 
 def _force_single_class(root: Path) -> int:
-    """Rewrite every YOLO label under root so the class id is 0 (single 'drone' class).
-
-    Handles both detection (5 cols) and segmentation (>=7 cols, polygon) label rows.
-    Returns the number of label files touched.
-    """
+    """Normalize labels to a single 'drone' class (id 0), CLASS-AWARE: for multi-class datasets keep
+    only drone-like classes and DROP the rest (so birds/planes aren't mislabelled as drones; their
+    frames become negatives). If the dataset's classes are unknown or none look drone-like, fall back
+    to collapsing all (single-class assumption). Handles detection + segmentation rows."""
+    info = _drone_class_ids(root)
     n = 0
     for lbl in root.rglob("*.txt"):
         if lbl.name in ("classes.txt",):
@@ -57,9 +86,14 @@ def _force_single_class(root: Path) -> int:
             parts = line.split()
             if not parts:
                 continue
-            parts[0] = "0"          # collapse any class -> drone
-            out.append(" ".join(parts))
-        lbl.write_text("\n".join(out) + ("\n" if out else ""))
+            try:
+                cls = int(float(parts[0]))           # skip comments / malformed rows safely
+            except ValueError:
+                continue
+            if info is None or not info[0] or cls in info[0]:   # keep drone-like (or all if unknown)
+                parts[0] = "0"; out.append(" ".join(parts))
+            # else: drop this row (bird/plane/etc.)
+        lbl.write_text("\n".join(out) + ("\n" if out else ""))   # empty file => background negative
         n += 1
     return n
 
@@ -140,8 +174,9 @@ def combine():
     """Build a combined data.yaml from ALL datasets present: every datasets/realworld/* dataset (the
     Universe drone/FPV mix + mjolnir), the synthetic AirSim set, and any captured realdrone frames."""
     sources = []
+    SKIP = {"shahed"}                              # flagged junk; excluded so it can't dominate/poison
     for d in sorted(RW.iterdir()) if RW.exists() else []:
-        if d.is_dir() and _splits(d):
+        if d.is_dir() and d.name not in SKIP and _splits(d):
             sources.append(d)
     for extra in (REPO / "datasets" / "airsim_drone", REPO / "datasets" / "realdrone"):
         if extra.exists() and (_splits(extra) or (extra / "images").exists()):

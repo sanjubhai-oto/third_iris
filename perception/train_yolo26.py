@@ -38,6 +38,7 @@ def parse_args(argv=None):
     p.add_argument("--name", default="uav")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--patience", type=int, default=30, help="early-stop patience")
+    p.add_argument("--workers", type=int, default=3, help="dataloader workers (low -> less RAM; avoids OOM)")
     return p.parse_args(argv)
 
 
@@ -60,6 +61,8 @@ def main(argv=None):
         name=args.name,
         resume=args.resume,
         patience=args.patience,
+        workers=args.workers,     # fewer loader workers -> lower system RAM (prev run OOM-killed)
+        cache=False,              # do NOT cache images in RAM
         # small-object friendly augmentation
         mosaic=1.0,
         close_mosaic=10,      # disable mosaic for last N epochs to sharpen small-box fit

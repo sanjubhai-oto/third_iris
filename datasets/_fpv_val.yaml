@@ -1,0 +1,6 @@
+train:
+  - C:/Users/admin/uav-vio-track/datasets/realworld/drone-fpv/valid/images
+val:
+  - C:/Users/admin/uav-vio-track/datasets/realworld/drone-fpv/valid/images
+nc: 1
+names: ['drone']
