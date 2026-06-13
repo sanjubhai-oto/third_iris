@@ -175,6 +175,9 @@ def main():
     ap.add_argument("--op-alt", type=float, default=25.0,
                     help="operating altitude (m) for the tracking test — Blocks has structures below "
                          "~20m, so we launch at 5m then climb here to fly in clear air")
+    ap.add_argument("--ego-alt", type=float, default=None,
+                    help="chaser start altitude (m); default = op-alt. Set LOWER than op-alt to test a "
+                         "ground-to-sky climb intercept (chaser low, target high/climbing)")
     args = ap.parse_args()
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
 
@@ -199,8 +202,9 @@ def main():
     ac.moveToZAsync(-START_ALT, 2.5, vehicle_name="Ego").join()
     print(f"[setup] Ego launched at {START_ALT:.0f}m; climbing both to {OP_ALT:.0f}m (clear air)", flush=True)
 
-    # place Ego at (0,0,-OP_ALT) facing +N; Target START_RANGE ahead (+N) facing the Ego
-    ego_w = np.array([0.0, 0.0, -OP_ALT])
+    # place Ego at (0,0,-EGO_ALT) facing +N; Target START_RANGE ahead (+N) facing the Ego
+    EGO_ALT = float(args.ego_alt) if args.ego_alt is not None else OP_ALT   # chaser start alt (low = climb test)
+    ego_w = np.array([0.0, 0.0, -EGO_ALT])
     tgt_w = SAFE_CENTER.copy()
     el = ego_w - EGO_HOME; tl = tgt_w - TARGET_HOME
     ac.moveToPositionAsync(float(el[0]), float(el[1]), float(el[2]), 4,
@@ -385,6 +389,8 @@ def main():
                     err_r = rng - args.gap
                     kf = 0.6 if err_r > 0 else 1.3
                     fwd = float(np.clip(kf * err_r, -eff_speed, eff_speed)) * (0.4 if coasting else 1.0)
+                    if args.gap < 1.0 and not coasting and err_r > 0.0:   # INTERCEPT: commit with a
+                        fwd = max(fwd, min(eff_speed, 4.0))               # closing-speed floor, don't creep
                     # DEADBAND: ignore tiny centered errors so the drone holds steady instead of hunting/
                     # jittering when the target is already centered (soft -> no discontinuity at the edge).
                     DB = 0.04
@@ -531,10 +537,13 @@ def main():
     if vis_rows:
         n, lost, ce, altrms, rg = stats(vis_rows)
         print("-" * 81)
-        print(f"{'ALL VISION':<16}{n:>7}{lost:>6}{ce[0]:>11.3f}{ce[1]:>10.3f}{ce[2]:>10.3f}{altrms:>9.2f}"
+        c0 = "  n/a " if ce[0] is None else f"{ce[0]:.3f}"     # all-lost (e.g. point-blank gap 0) -> no cerr
+        c1 = "  n/a " if ce[1] is None else f"{ce[1]:.3f}"
+        c2 = "  n/a " if ce[2] is None else f"{ce[2]:.3f}"
+        print(f"{'ALL VISION':<16}{n:>7}{lost:>6}{c0:>11}{c1:>10}{c2:>10}{altrms:>9.2f}"
               f"   {rg[1]:.1f}/{rg[0]:.1f}/{rg[2]:.1f}")
         inframe = 100.0 * (1 - lost / max(1, n))
-        print(f"\nin-frame: {inframe:.1f}%   center_err mean={ce[0]:.3f} (0=perfect, 1=frame edge)   "
+        print(f"\nin-frame: {inframe:.1f}%   center_err mean={c0.strip()} (0=perfect, 1=frame edge)   "
               f"alt-track RMS={altrms:.2f}m   gap={args.gap:.0f}m")
         verdict = "PASS" if (ce[0] < 0.18 and inframe > 95 and altrms < 3.0) else "NEEDS TUNING"
         print(f"collisions: Ego={coll_count['Ego']} Target={coll_count['Target']}")
