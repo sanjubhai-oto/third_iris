@@ -148,6 +148,8 @@ def pattern_velocity(name, t):
         return (2.8 * math.sin(0.22 * t), 0.6 * math.cos(0.3 * t), 0.0)
     if name == "dive":             # steep climb/descent dominated — vertical tracking stress
         return (0.6 * math.sin(0.2 * t), 0.0, 1.6 * math.sin(0.28 * t))
+    if name == "skyward":          # sustained CLIMB to the sky (vd<0 = up) + gentle weave — does the
+        return (0.4 * math.sin(0.25 * t), 0.4 * math.cos(0.25 * t), -1.8)   # chaser follow it straight up?
     return (0.0, 0.0, 0.0)
 
 
@@ -281,10 +283,11 @@ def main():
                     rN = -1.6 * (hr - BOX_R) * hoff[0] / hr
                     rE = -1.6 * (hr - BOX_R) * hoff[1] / hr
                 alt = -tgt[2]
+                amax = 90.0 if pattern == "skyward" else ALT_MAX  # let the climb-to-sky test go high
                 if alt < ALT_MIN:                                # too low -> climb (up = -vz)
                     rD = -1.6 * (ALT_MIN - alt)
-                elif alt > ALT_MAX:                              # too high -> descend
-                    rD = 1.6 * (alt - ALT_MAX)
+                elif alt > amax:                                # too high -> descend
+                    rD = 1.6 * (alt - amax)
                 ci = ac.simGetCollisionInfo(vehicle_name="Target")
                 if ci.has_collided and ci.time_stamp != coll_stamp["Target"]:
                     coll_stamp["Target"] = ci.time_stamp; coll_count["Target"] += 1
@@ -387,7 +390,11 @@ def main():
                     DB = 0.04
                     exd = 0.0 if abs(ex_s) < DB else ex_s - math.copysign(DB, ex_s)
                     eyd = 0.0 if abs(ey_s) < DB else ey_s - math.copysign(DB, ey_s)
-                    vz_raw = float(np.clip(2.0 * eyd, -2.8, 2.8))   # lower gain + rate-limit -> no ringing
+                    # vertical = image-centering (P) + VELOCITY FEED-FORWARD: match the target's climb/
+                    # descent rate (from the CA world-tracker) so a sustained climb has no steady-state lag.
+                    tvz = tca.vel()
+                    vz_ff = float(np.clip(tvz[2], -3.2, 3.2)) if tvz is not None else 0.0
+                    vz_raw = float(np.clip(2.0 * eyd + vz_ff, -3.6, 3.6))
                     vz_b = prev_vz + float(np.clip(vz_raw - prev_vz, -VZ_ACC * dt, VZ_ACC * dt))
                     prev_vz = vz_b
                     bearing = math.degrees(math.atan(exd * math.tan(math.radians(HFOV / 2))))
