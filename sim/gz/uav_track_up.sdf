@@ -1,0 +1,64 @@
+<?xml version="1.0" ?>
+<!-- Minimal world for UP-FACING-camera air-to-air VIO tracking.
+     Chaser (jetray, has camera_up) low; target (jetray_target) high overhead.
+     Both poses driven kinematically from Python via /world/uav_track_up/set_pose.
+     Run: GZ_SIM_RESOURCE_PATH=<px4 models> gz sim -s -r uav_track_up.sdf -->
+<sdf version="1.9">
+  <world name="uav_track_up">
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- system plugins: headless `gz sim -s` does NOT auto-load these, and WITHOUT the Sensors
+         system the camera never renders/publishes. UserCommands gives the /world/.../set_pose
+         service used to drive both drones kinematically. -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.7 0.8 0.95 1</background>
+      <sky/>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 100 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+      <direction>-0.3 0.2 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>500 500</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>500 500</size></plane></geometry>
+          <material><diffuse>0.3 0.4 0.3 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- CHASER: real jetray model (has camera_front + camera_up). Start low. -->
+    <include>
+      <uri>model://jetray</uri>
+      <name>chaser</name>
+      <pose>0 0 3 0 0 0</pose>
+    </include>
+
+    <!-- TARGET: visual-only, set_pose-driven. Start ~15 m overhead the chaser. -->
+    <include>
+      <uri>model://jetray_target</uri>
+      <name>target</name>
+      <pose>0 0 18 0 0 0</pose>
+    </include>
+  </world>
+</sdf>
