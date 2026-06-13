@@ -15,8 +15,11 @@ Run in WSL (software GL):
   bash sim/gz/launch_gz.sh
   LIBGL_ALWAYS_SOFTWARE=1 python3 sim/gz/track_gz.py --pattern orbit_climb --secs 40
 """
-import argparse, math, time, threading
+import argparse, math, time, threading, sys, os
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "airsim"))
+from target_tracker import TargetCA          # proven 9-state constant-accel Kalman (reuse from AirSim)
 
 from gz.transport13 import Node
 from gz.msgs10.pose_pb2 import Pose
@@ -178,9 +181,13 @@ def main():
     lock_xy = np.array([0.0, 0.0]); have_lock = False
     GATE = 0.45; miss = 0
     VFOV = 2 * math.atan(math.tan(HFOV / 2) * 9 / 16)   # 960x540 -> vertical FOV
-    Pt = None; Vt = np.zeros(3); phase = "TRACK"        # target world pos estimate + velocity (for PIP)
+    phase = "TRACK"
     hit = False; hit_t = None; min_range = 1e9
-    track_hist = []                                     # (simt, Pt) during TRACK -> windowed velocity fit
+    # CONSTANT-ACCEL Kalman on the target WORLD position (reused from AirSim; gating dropped world-est
+    # error 8.5->1.3m there). Fed every detected frame -> follows the orbit CURVE (accel state) and
+    # coasts on that curve when vision saturates point-blank, far better than a constant-velocity coast.
+    tca = TargetCA(q=4.0, r=0.5)
+    Pt = None; Vt = np.zeros(3)
     last = time.time(); simt = 0.0
     log = []                                 # (t, seen, ex, ey, range, ego(3), tgt_truth(3))
     vw = None
@@ -231,20 +238,21 @@ def main():
             vz = float(np.clip(KZ * (rng - args.gap), -eff, eff))   # climb to hold gap (z up +)
             # reconstruct the TARGET WORLD POSITION from the up-cam ray (chaser yaw 0): the ray points
             # up (+Z) tilted by the image offset. Used for the PIP terminal intercept.
-            # Only trust vision-derived target world pos in the TRACK phase (clean standoff geometry).
-            # Close-in (COMMIT) the target saturates the frame + depth -> garbage; we coast instead.
-            if phase == "TRACK" and rng < 60:
+            # reconstruct the target WORLD position from the up-cam ray (chaser yaw 0) + depth range, and
+            # feed the CA Kalman. Keep doing this INTO the dash while vision+depth are valid (depth stays
+            # good closer than RGB saturates) -> the world track stays live deep into the terminal phase.
+            if rng < 80:
                 ray = np.array([ey * math.tan(VFOV / 2), -ex * math.tan(HFOV / 2), 1.0])
                 ray = ray / np.linalg.norm(ray)
                 P_new = ego + rng * ray
-                if Pt is None or np.linalg.norm(P_new - Pt) > 8.0:   # init or reject implausible jump
-                    Pt = P_new
-                else:
-                    Pt = 0.6 * Pt + 0.4 * P_new                      # EMA target position (smoothed)
-                track_hist.append((simt, Pt.copy()))                 # for a clean windowed velocity fit
+                tca.update(P_new, dt)
+                Pt = tca.pos(); Vt = tca.vel()
         else:
             ex = ey = 0.0; rng = float('nan')
             vx = vy = vz = 0.0                                       # lost -> hold (no spin)
+            pr = tca.predict_only(dt)                                # coast the world track on the CA model
+            if pr is not None:
+                Pt = pr; Vt = tca.vel()
 
         # ---- TRACK-THEN-COMMIT terminal intercept (PIP / PN-style) ----
         # Phase 1 holds the gap (above). Phase 2 (commit): drive onto the PREDICTED intercept point
@@ -254,32 +262,23 @@ def main():
         if args.commit and Pt is not None and simt >= args.commit_after:
             if phase != "COMMIT":
                 phase = "COMMIT"
-                # estimate target velocity by a WINDOWED LEAST-SQUARES fit over the last ~2.5 s of the
-                # clean track history (per-frame derivative was 3x too noisy -> 8 m miss). Robust slope.
-                win = [(t, p) for (t, p) in track_hist if t >= simt - 2.5]
-                if len(win) >= 4:
-                    ts = np.array([t for t, _ in win]); ts = ts - ts.mean()
-                    Ps = np.array([p for _, p in win])
-                    denom = float((ts * ts).sum())
-                    Vt = (ts[:, None] * (Ps - Ps.mean(0))).sum(0) / denom if denom > 1e-6 else np.zeros(3)
-                    Vt = np.clip(Vt, -12, 12)
-                print(f"[COMMIT] terminal dash from t={simt:.1f}s; latched target "
-                      f"pos={Pt.round(1)} vel={Vt.round(2)} (windowed fit, coast blind through saturation)",
-                      flush=True)
-            # COAST the target on its latched constant velocity (vision saturates point-blank, so we do
-            # NOT trust close-range detections) -> pure predicted-intercept-point terminal guidance.
-            Pt = Pt + Vt * dt
+                print(f"[COMMIT] terminal dash from t={simt:.1f}s; CA target "
+                      f"pos={Pt.round(1)} vel={Vt.round(2)} (live CA track + curve coast)", flush=True)
+            # Terminal guidance on the CA Kalman: aim at the PREDICTED intercept point. The CA filter is
+            # still being updated from vision+depth each frame it's visible (above) and coasts on its
+            # acceleration state (the orbit CURVE) when saturated -> the estimate follows the real target
+            # far better than a constant-velocity blind coast.
             cur_range = float(np.linalg.norm(Pt - ego))
             min_range = min(min_range, cur_range)
             t_go = cur_range / max(1.0, args.intercept_speed)
-            pip = Pt + Vt * t_go                                    # predicted intercept point (PN lead)
+            pip = Pt + Vt * t_go + 0.5 * tca.x[6:9] * t_go * t_go   # PIP with accel (curve) lead
             dirv = pip - ego; n = np.linalg.norm(dirv)
             if n > 1e-3:
                 cmd = dirv / n * args.intercept_speed
                 vx, vy, vz = float(cmd[0]), float(cmd[1]), float(cmd[2])
             if cur_range < args.hit_radius and not hit:
                 hit = True; hit_t = simt
-                print(f"[INTERCEPT] HIT at t={simt:.1f}s range={cur_range:.2f}m "
+                print(f"[INTERCEPT] HIT(est) t={simt:.1f}s est_range={cur_range:.2f}m "
                       f"target~{Pt.round(1)} chaser~{ego.round(1)}", flush=True)
 
         # accel-limit -> steady platform (looser in COMMIT so the terminal dash can accelerate)
