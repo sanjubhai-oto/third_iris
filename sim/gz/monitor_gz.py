@@ -19,12 +19,13 @@ VFOV = 2 * math.atan(math.tan(HFOV / 2) * 9 / 16)
 def set_pose(node, name, x, y, z):
     import track_gz; track_gz.WORLD = WORLD; _set_pose(node, name, x, y, z)
 
-# each target flies its own pattern so the monitor must hold multiple distinct tracks
+# each target flies its own (modest) pattern so the monitor must hold multiple distinct tracks, but
+# they stay CLUSTERED overhead within the up-cam FOV so all three remain observable.
 def tgt_pose(name, t, base):
     bx, by, bz = base
-    if name == "target_red":    return (bx + 5*math.cos(0.4*t),  by + 5*math.sin(0.4*t),  bz + 0.3*t)
-    if name == "target_green":  return (bx + 4*math.sin(0.5*t),  by + 4*math.cos(0.3*t),  bz)
-    if name == "target_blue":   return (bx + 3*math.sin(0.7*t),  by + 6*math.sin(0.35*t), bz + 0.2*t)
+    if name == "target_red":    return (bx + 2.0*math.cos(0.4*t),  by + 2.0*math.sin(0.4*t),  bz)
+    if name == "target_green":  return (bx + 1.8*math.sin(0.5*t),  by + 1.8*math.cos(0.3*t),  bz)
+    if name == "target_blue":   return (bx + 1.5*math.sin(0.7*t),  by + 2.0*math.sin(0.35*t), bz)
     return base
 
 def main():
@@ -41,7 +42,8 @@ def main():
     node = Node(); cam = Cam(node); depth = DepthCam(node)
     model = YOLO(args.yolo)
     chaser = np.array([0.0, 0.0, 6.0])                 # fixed monitoring perch, looking up
-    bases = {"target_red": (3, 2, 18), "target_green": (-4, 3, 20), "target_blue": (2, -5, 19)}
+    # targets ~5 m overhead -> all 3 small drones stay resolvable to the detector (at 10 m only 1-2 were)
+    bases = {"target_red": (3, 2, 11), "target_green": (-3, 2, 11), "target_blue": (2, -3, 11)}
     set_pose(node, "chaser", *chaser)
     for n, b in bases.items():
         set_pose(node, n, *b)
