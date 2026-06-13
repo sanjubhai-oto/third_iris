@@ -15,6 +15,7 @@ could not produce (that build has no up camera).
 |---|---|---|---|---|---|---|
 | orbit_climb | YOLO uav_diverse @960 + depth | **99.3%** | 0.265 | **1.77 m** (through climb 18→40 m) | 4.1 m | no divergence |
 | orbit (const alt) | YOLO @960 + depth | 100% | 0.25 | **1.28 m** | 3.9 m | |
+| zigzag (hard lateral) | YOLO @960 + depth | **100%** | 0.225 | **1.01 m** | 3.2 m | robust to fast lateral |
 | orbit_climb | classical blob (clear sky) | 99% | 0.18 | — | 5 m | first proof |
 
 - Control law: HOLD heading (no yaw — a fixed up-cam only rotates the image when yawed; this killed the
