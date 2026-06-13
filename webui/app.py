@@ -123,7 +123,9 @@ G = {"jpeg": None, "tel": {"state": "INIT"}, "gap": 12.0, "mode": "fused", "spee
      # ground-vehicle strike (simulated intercept onto a selected car)
      "strike_mode": False, "strike_click": None, "strike_armed": False, "abort_strike": False,
      # dataset capture: while ON and a target is locked, save (frame, YOLO label) pairs for fine-tuning
-     "capture": False, "cap_n": 0}
+     "capture": False, "cap_n": 0,
+     # auto-lock the strongest UAV detection (no click); search = scan for a UAV then auto-lock it
+     "autolock": False, "search": False}
 # guidance modes: location | vision | fused | vision_after_arrival
 # video protocols: airsim | rtsp | udp | http | device | file
 # telemetry protocols: airsim | mavlink_udp | mavlink_serial
@@ -395,6 +397,17 @@ def tracking_loop():
                     if rf is not None:
                         rf.reset()
 
+        # ---- AUTO-LOCK: when armed (or SEARCH is running), automatically lock the strongest UAV
+        #      detection — no click needed. SEARCH scans until a UAV appears, then this locks it. ----
+        if state != "TRACK" and (G.get("autolock") or G.get("search")) and real_dets:
+            sel = max(real_dets, key=lambda d: d["conf"])
+            locked_id = sel["id"]; manual_tk = None
+            state = "TRACK"; lost = 0; miss = 0; prev_cmd = None; prev_yaw = None
+            kf.reset(); tkf.reset(); i_yaw = 0.0; trail.clear()
+            if rf is not None:
+                rf.reset()
+            G["search"] = False                          # acquired -> stop searching
+
         # ---- STRIKE: select a vehicle target, arm/abort ----
         sclick = G["strike_click"]
         if sclick is not None:
@@ -602,6 +615,11 @@ def tracking_loop():
                 ac.moveByVelocityAsync(float(cmd[0]), float(cmd[1]), float(cmd[2]), 0.6,
                                        yaw_mode=airsim.YawMode(False, float(prev_yaw)), vehicle_name="Ego")
                 yr_deg = yaw_err_deg
+        elif G.get("search"):  # SEARCH — sweep steadily to find a UAV (real-world: no GPS azimuth to face)
+            yr_cmd = 30.0
+            ac.moveByVelocityAsync(0, 0, 0, 0.6,
+                                   yaw_mode=airsim.YawMode(True, yr_cmd), vehicle_name="Ego")
+            yr_deg = yr_cmd
         else:  # DETECT — gently yaw the camera onto the target(s) so the operator can see & click
             az_aim = az_gps
             if G["strike_mode"]:                 # in strike mode, face the nearest ground vehicle
@@ -695,6 +713,7 @@ def tracking_loop():
                         "ego_n": round(ego[0], 1), "ego_e": round(ego[1], 1), "ego_d": round(ego[2], 1),
                         "n_detections": len(real_dets), "vision_rate": round(100*sum(vis_hist)/max(1,len(vis_hist))),
                         # TEAM awareness: every drone tracked this frame (ByteTrack persistent IDs + norm pos)
+                        "autolock": bool(G.get("autolock")), "search": bool(G.get("search")),
                         "n_targets": len(real_dets),
                         "targets": [{"id": d["id"], "conf": round(d["conf"], 2),
                                      "cx": round(d["cx"]/W, 3), "cy": round(d["cy"]/H, 3)}
@@ -775,6 +794,19 @@ def set_speed():
 def set_capture():
     G["capture"] = bool(request.get_json(force=True).get("on", False))
     return jsonify({"capture": G["capture"], "cap_n": G["cap_n"]})
+
+
+@app.route("/set_autolock", methods=["POST"])
+def set_autolock():
+    G["autolock"] = bool(request.get_json(force=True).get("on", False))
+    return jsonify({"autolock": G["autolock"]})
+
+
+@app.route("/search", methods=["POST"])
+def search():
+    # toggle SEARCH: scan for a UAV and auto-lock the first one found
+    G["search"] = bool(request.get_json(force=True).get("on", not G.get("search")))
+    return jsonify({"search": G["search"]})
 
 
 @app.route("/set_video_source", methods=["POST"])
