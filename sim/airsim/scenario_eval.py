@@ -49,9 +49,9 @@ START_ALT = 5.0         # Ego launch altitude (m)
 
 
 # ---------------------------------------------------------------- AirSim helpers
-def grab(ac):
-    reqs = [airsim.ImageRequest("front_center", airsim.ImageType.Scene, False, False),
-            airsim.ImageRequest("front_center", airsim.ImageType.DepthPlanar, True, False)]
+def grab(ac, cam="front_center"):
+    reqs = [airsim.ImageRequest(cam, airsim.ImageType.Scene, False, False),
+            airsim.ImageRequest(cam, airsim.ImageType.DepthPlanar, True, False)]
     r = ac.client.call("simGetImages", reqs, "Ego", False)
     if not r or len(r) < 2:
         return None, None
@@ -166,6 +166,12 @@ def main():
                          "stays centered regardless of airframe tilt (FPV camera decoupled)")
     ap.add_argument("--gimbal-frame", choices=["world", "relative"], default="world",
                     help="how simSetCameraPose interprets the orientation (world vs vehicle-relative)")
+    ap.add_argument("--cam", choices=["front", "up", "down"], default="front",
+                    help="camera mount + control law: 'front'=nose-forward body servo (default); "
+                         "'up'=sky-facing, NO-YAW strafe+CLIMB (chaser under an overhead target) — needs a "
+                         "sim with an up camera (this Blocks build has none, use GZ); "
+                         "'down'=top-attack, bottom_center camera, NO-YAW strafe+DESCEND (chaser above, "
+                         "dives onto a lower target) — same off-axis law, VALIDATABLE in this AirSim build")
     ap.add_argument("--body-servo", action="store_true",
                     help="in vision-only phases, use pure body-frame visual servo instead of "
                          "world-frame standoff reconstruction")
@@ -182,8 +188,11 @@ def main():
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
 
     OP_ALT = float(args.op_alt)
-    # safe operating box for the Target so it can't wander into a Blocks structure / the ground
-    SAFE_CENTER = np.array([START_RANGE, 0.0, -OP_ALT])
+    # safe operating box for the Target so it can't wander into a Blocks structure / the ground.
+    # up-cam: target sits OVERHEAD the chaser (small horizontal offset) so a sky-facing camera sees it;
+    # front-cam: target sits START_RANGE ahead.
+    SAFE_CENTER = (np.array([0.0, 0.0, -OP_ALT]) if args.cam in ("up", "down")
+                   else np.array([START_RANGE, 0.0, -OP_ALT]))
     BOX_R = 9.0                          # horizontal leash radius (m) around SAFE_CENTER
     ALT_MIN, ALT_MAX = 18.0, 34.0        # altitude band (m above ground) — stays above Blocks
 
@@ -196,21 +205,40 @@ def main():
     for v in ("Ego", "Target"):
         ac.enableApiControl(True, v); ac.armDisarm(True, v)
     EGO_ALT = float(args.ego_alt) if args.ego_alt is not None else OP_ALT   # chaser start alt (low = climb test)
-    # ---- LAUNCH THE TARGET FIRST -> into the air, then launch the chaser (real sequence) ----
     tgt_w = SAFE_CENTER.copy()
     ego_w = np.array([0.0, 0.0, -EGO_ALT])
     tl = tgt_w - TARGET_HOME; el = ego_w - EGO_HOME
-    print("[setup] (1) launching TARGET into the air first...", flush=True)
-    ac.takeoffAsync(vehicle_name="Target").join()
-    ac.moveToPositionAsync(float(tl[0]), float(tl[1]), float(tl[2]), 4,
-                           yaw_mode=airsim.YawMode(False, 180.0), vehicle_name="Target").join()
-    print(f"[setup]     target airborne @ {OP_ALT:.0f}m, {START_RANGE:.0f}m ahead", flush=True)
-    time.sleep(1.0)
-    print("[setup] (2) launching CHASER...", flush=True)
-    ac.takeoffAsync(vehicle_name="Ego").join()
-    ac.moveToPositionAsync(float(el[0]), float(el[1]), float(el[2]), 3,
-                           yaw_mode=airsim.YawMode(False, 0.0), vehicle_name="Ego").join()
-    print(f"[setup]     chaser launched @ {EGO_ALT:.0f}m", flush=True)
+
+    def _launch_target(spd=4):
+        ac.takeoffAsync(vehicle_name="Target").join()
+        ac.moveToPositionAsync(float(tl[0]), float(tl[1]), float(tl[2]), spd,
+                               yaw_mode=airsim.YawMode(False, 180.0), vehicle_name="Target").join()
+
+    def _launch_chaser(spd=3):
+        ac.takeoffAsync(vehicle_name="Ego").join()
+        ac.moveToPositionAsync(float(el[0]), float(el[1]), float(el[2]), spd,
+                               yaw_mode=airsim.YawMode(False, 0.0), vehicle_name="Ego").join()
+
+    # LAUNCH ORDER matters so they don't cross each other's vertical path and collide:
+    #  - down (top-attack): chaser is ABOVE the target -> launch the CHASER first up to altitude,
+    #    THEN the target below it (target climbs only to its lower alt, never reaching the chaser).
+    #  - front/up: launch the TARGET first into the air, then the chaser (the real sequence).
+    if args.cam == "down":
+        print("[setup] (1) top-attack: launching CHASER high first...", flush=True)
+        _launch_chaser()
+        print(f"[setup]     chaser airborne @ {EGO_ALT:.0f}m", flush=True)
+        time.sleep(1.0)
+        print("[setup] (2) launching TARGET below the chaser...", flush=True)
+        _launch_target()
+        print(f"[setup]     target airborne @ {OP_ALT:.0f}m (below chaser)", flush=True)
+    else:
+        print("[setup] (1) launching TARGET into the air first...", flush=True)
+        _launch_target()
+        print(f"[setup]     target airborne @ {OP_ALT:.0f}m", flush=True)
+        time.sleep(1.0)
+        print("[setup] (2) launching CHASER...", flush=True)
+        _launch_chaser()
+        print(f"[setup]     chaser launched @ {EGO_ALT:.0f}m", flush=True)
     time.sleep(1.5)
     # collision-info baseline (to detect NEW collisions during the run)
     coll_count = {"Ego": 0, "Target": 0}
@@ -230,6 +258,19 @@ def main():
     locked_box = None
     # fixed camera mount offset (vehicle frame); gimbal only changes ORIENTATION each frame
     cam_pos = airsim.Vector3r(0.50, 0.0, 0.10)
+    # AXIAL (off-nose) camera support. This OLD cosysairsim Blocks build can't set camera pose (RPC
+    # broken, settings pose ignored, custom names rejected) and ships only a FORWARD (front_center) and a
+    # DOWN (bottom_center) camera -> NO sky/up camera. So:
+    #   --cam up   -> needs a sim WITH an up camera (GZ Sim); logic here, pitch +90, climb toward target.
+    #   --cam down -> uses the working bottom_center (pitch -90); SAME no-yaw strafe law, descend toward
+    #                 a LOWER target -> validates the off-axis control law in THIS build (top-attack).
+    AXIAL = args.cam in ("up", "down")
+    AX_PITCH = (math.pi / 2.0) if args.cam == "up" else (-math.pi / 2.0)   # camera optical-axis pitch
+    CAM_NAME = "bottom_center" if args.cam == "down" else "front_center"
+    if AXIAL:
+        print(f"[cam] {args.cam.upper()}-facing (camera '{CAM_NAME}'): NO-YAW strafe-to-align + vertical "
+              f"close. {'(up needs GZ sim; no up-cam in this Blocks build)' if args.cam=='up' else ''}",
+              flush=True)
     if args.gimbal:
         print("[gimbal] software-stabilized camera pointing ENABLED", flush=True)
 
@@ -257,13 +298,14 @@ def main():
         last_range = float(args.gap)             # hold last good range during a dropout
         COAST_MAX = 6                            # frames to keep panning on prediction before declaring lost
         prev_yr = 0.0; prev_bfwd = 0.0; prev_vz = 0.0   # body-servo command smoothing (anti-whip / steady)
+        prev_bstr = 0.0                          # lateral-strafe smoothing (axial cam) -> caps roll/tilt
         YAW_ACC = 170.0                          # max yaw-rate change (deg/s^2) -> no violent whip on reversals
         FWD_ACC = 6.0                            # forward accel cap: high enough to CHASE a receding target
                                                  # (low values lost it on recede), still bounds pitch a bit
         VZ_ACC = 3.0                             # vertical accel cap (m/s^2) -> damps the up/down oscillation
         while time.time() - t0 < secs:
             now = time.time(); dt = min(0.3, max(0.02, now - last)); last = now
-            scene, depth = grab(ac)
+            scene, depth = grab(ac, CAM_NAME)
             if scene is None:
                 time.sleep(0.02); continue
             H, W = scene.shape[:2]; cxI, cyI = W / 2.0, H / 2.0
@@ -329,6 +371,9 @@ def main():
                         # using the orientation we commanded the gimbal to last frame.
                         if args.gimbal and cam_yaw is not None:
                             meas = target_from_vision_cam(ego, cam_yaw, cam_pitch, ex, ey, dval, HFOV, VFOV)
+                        elif AXIAL:
+                            # fixed axial mount: camera yaws with the body, pitched straight up/down
+                            meas = target_from_vision_cam(ego, ego_yaw, AX_PITCH, ex, ey, dval, HFOV, VFOV)
                         else:
                             meas = target_from_vision(ego, ego_yaw, ex, ey, dval, HFOV, VFOV)
                 else:
@@ -358,7 +403,53 @@ def main():
                     pass
             # slow down and stop coasting hard when the target is not currently seen
             eff_speed = args.speed * (1.0 if meas is not None else max(0.25, 1.0 - 0.15 * lost_n))
-            if args.body_servo and vision_only:
+            if AXIAL and vision_only:
+                # ===== AXIAL (UP/DOWN) CAMERA: NO-YAW STRAFE-TO-ALIGN + VERTICAL CLOSE =====
+                # Target is off the nose-axis (overhead for 'up', below for 'down'). The camera is fixed
+                # along that axis, so YAWING the airframe only ROTATES the image — it does NOT recenter the
+                # target (that was the random yaw-shake on the gimbal path). So HOLD heading (no yaw) and
+                # translate horizontally to stay aligned under/over the target, moving vertically to hold
+                # the gap. One law for both: move TOWARD the target's altitude until |Δalt| == gap.
+                hold_yaw = math.degrees(ego_yaw)
+                if cur is not None and dval and dval > 0.3:
+                    last_range = 0.5 * float(dval) + 0.5 * last_range
+                if tp is not None and (cur is not None or lost_n <= COAST_MAX):
+                    dN = tp[0] - ego[0]; dE = tp[1] - ego[1]
+                    cyaw, syaw = math.cos(ego_yaw), math.sin(ego_yaw)
+                    bx = cyaw * dN + syaw * dE        # horizontal offset, body forward
+                    by = -syaw * dN + cyaw * dE       # horizontal offset, body right
+                    # softer strafe gain + speed cap: an axial (down/up) camera is SENSITIVE to airframe
+                    # tilt -> aggressive lateral velocity rolls the body and swings the target out of view.
+                    KP_XY = 0.55
+                    str_cap = min(eff_speed, 6.0)     # cap horizontal strafe speed -> bounds roll/pitch
+                    sgn = 0.4 if cur is None else 1.0  # ease off while coasting (no fresh fix)
+                    vx_b = float(np.clip(KP_XY * bx, -str_cap, str_cap)) * sgn
+                    vy_b = float(np.clip(KP_XY * by, -str_cap, str_cap)) * sgn
+                    d_alt = (-tp[2]) - (-ego[2])      # +ve = target ABOVE the chaser, -ve = BELOW
+                    toward = math.copysign(1.0, d_alt) if abs(d_alt) > 1e-3 else 1.0
+                    err_v = abs(d_alt) - args.gap     # >0 = too far from the target vertically
+                    # vz_b sign: NED -ve = up. Move TOWARD the target (up if it's above, down if below).
+                    vz_b = float(np.clip(-0.9 * err_v * toward, -eff_speed, eff_speed))
+                    if args.gap < 1.0 and err_v > 0.0:            # intercept: commit the vertical close
+                        vz_b = -toward * min(eff_speed, 4.0)
+                    # accel-limit ALL THREE body axes (incl. lateral strafe) -> no roll/pitch spikes that
+                    # tilt the fixed axial camera off the target.
+                    vx_b = prev_bfwd + float(np.clip(vx_b - prev_bfwd, -FWD_ACC * dt, FWD_ACC * dt))
+                    vy_b = prev_bstr + float(np.clip(vy_b - prev_bstr, -FWD_ACC * dt, FWD_ACC * dt))
+                    vz_b = prev_vz + float(np.clip(vz_b - prev_vz, -VZ_ACC * dt, VZ_ACC * dt))
+                    prev_bfwd = vx_b; prev_bstr = vy_b; prev_vz = vz_b; prev_yr = 0.0
+                    yaw_err = 0.0; rng = float(abs(d_alt))
+                    ac.moveByVelocityBodyFrameAsync(vx_b, vy_b, vz_b, 0.4,
+                                                    yaw_mode=airsim.YawMode(False, hold_yaw),
+                                                    vehicle_name="Ego")
+                else:
+                    # lost -> hold position & heading, do NOT spin looking for it
+                    prev_bfwd = 0.0; prev_bstr = 0.0; prev_vz = 0.0; rng = last_range; yaw_err = 0.0
+                    ac.moveByVelocityBodyFrameAsync(0.0, 0.0, 0.0, 0.4,
+                                                    yaw_mode=airsim.YawMode(False, hold_yaw),
+                                                    vehicle_name="Ego")
+                prev_cmd = None; prev_yaw = None
+            elif args.body_servo and vision_only:
                 # ===== ROBUST BODY-FRAME VISUAL SERVO with COAST-THROUGH-DROPOUT =====
                 # Detected -> update the image-Kalman and servo on its smoothed+lead estimate. Detector
                 # MISS -> keep panning on the prediction (constant-velocity) for up to COAST_MAX frames
@@ -459,7 +550,10 @@ def main():
             if vision_only:
                 if cur is not None:
                     exw = (cur["cx"] - cxI) / cxI; eyw = (cur["cy"] - cyI) / cyI
-                    zw = target_from_vision(ego, ego_yaw, exw, eyw, last_range, HFOV, VFOV)
+                    if AXIAL:
+                        zw = target_from_vision_cam(ego, ego_yaw, AX_PITCH, exw, eyw, last_range, HFOV, VFOV)
+                    else:
+                        zw = target_from_vision(ego, ego_yaw, exw, eyw, last_range, HFOV, VFOV)
                     est = tca.update(np.asarray(zw, float), dt); seen = True
                 else:
                     pr = tca.predict_only(dt); seen = False
@@ -492,9 +586,15 @@ def main():
         return
 
     try:
-        # PHASE 1 — GPS-aided approach from 30 m to the gap (no recording, target hovers)
-        print("[phase] APPROACH 30m -> gap", flush=True)
-        run_phase("approach", None, 14.0, vision_only=False)
+        # PHASE 1 — GPS-aided approach to the gap (no recording, target hovers).
+        # SKIP for up-cam: the chaser already starts directly under the overhead target, and a GPS
+        # standoff would fly it to a horizontal gap (wrong geometry) -> go straight to vision.
+        if args.cam not in ("up", "down"):
+            print("[phase] APPROACH 30m -> gap", flush=True)
+            run_phase("approach", None, 14.0, vision_only=False)
+        else:
+            print(f"[phase] {args.cam}-cam: skipping GPS approach (chaser starts aligned with target)",
+                  flush=True)
         # PHASE 2 — pure vision-only tracking through the pattern sequence (recorded)
         for p in patterns:
             print(f"[phase] VISION-ONLY pattern={p}", flush=True)
@@ -545,7 +645,7 @@ def main():
         inframe = 100.0 * (1 - lost / max(1, n))
         print(f"\nin-frame: {inframe:.1f}%   center_err mean={c0.strip()} (0=perfect, 1=frame edge)   "
               f"alt-track RMS={altrms:.2f}m   gap={args.gap:.0f}m")
-        verdict = "PASS" if (ce[0] < 0.18 and inframe > 95 and altrms < 3.0) else "NEEDS TUNING"
+        verdict = "PASS" if (ce[0] is not None and ce[0] < 0.18 and inframe > 95 and altrms < 3.0) else "NEEDS TUNING"
         print(f"collisions: Ego={coll_count['Ego']} Target={coll_count['Target']}")
         print(f"VERDICT: {verdict}")
 
