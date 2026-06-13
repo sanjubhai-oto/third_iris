@@ -793,7 +793,7 @@ def set_mode():
 
 @app.route("/set_speed", methods=["POST"])
 def set_speed():
-    G["speed"] = max(0.5, min(12.0, float(request.get_json(force=True)["speed"]))); return ("", 204)
+    G["speed"] = max(0.5, min(83.0, float(request.get_json(force=True)["speed"]))); return ("", 204)  # up to ~300 km/h
 
 
 @app.route("/set_capture", methods=["POST"])

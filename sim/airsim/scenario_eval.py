@@ -36,6 +36,7 @@ sys.path.insert(0, str(REPO / "sim" / "airsim"))
 from guidance import (Vec3KF, target_from_vision, target_from_vision_cam, standoff_command,  # noqa: E402
                       vfov_from_hfov, look_at_angles, camera_rel_quat, euler_R, R_to_quat)
 from smooth_control import ImageKalman          # noqa: E402  image-space predictor (coast through dropouts)
+from target_tracker import TargetCA, plot_trajectories   # noqa: E402  world-frame target track + map
 
 # sim eval defaults to the sim-trained weights (best for the AirSim target); UAV_MODEL overrides
 MODEL = os.environ.get("UAV_MODEL", str(REPO / "runs/train/airsim_drone/weights/best.pt"))
@@ -217,6 +218,8 @@ def main():
         Path(args.out).mkdir(parents=True, exist_ok=True)
     log = []          # (phase, pattern, t, center_err, range, ego_alt, tgt_alt, alt_err, lost)
     traj = []         # (t, pattern, ego_n,e,d, roll, pitch, yaw, tgt_n,e,d) — 3-D path + attitude
+    twlog = []        # (t, ego_ned, tgt_truth_ned, tgt_world_estimate_ned, seen) — for the trajectory map
+    tca = TargetCA(q=3.0, r=0.6)   # world-frame constant-accel target track (predicts through visual loss)
     last = time.time()
     locked_box = None
     # fixed camera mount offset (vehicle frame); gimbal only changes ORIENTATION each frame
@@ -435,6 +438,18 @@ def main():
                         -ego[2], -tgt[2], alt_err, cur is None))
             traj.append((now - t0, pattern or "-", ego[0], ego[1], ego[2], roll, pitch, eyaw,
                          tgt[0], tgt[1], tgt[2]))
+            # ---- world-frame target trajectory: reconstruct from chaser pose + vision, CA-filter, and
+            #      PREDICT when the detector misses -> trajectory map + coast-through-loss estimate ----
+            if vision_only:
+                if cur is not None:
+                    exw = (cur["cx"] - cxI) / cxI; eyw = (cur["cy"] - cyI) / cyI
+                    zw = target_from_vision(ego, ego_yaw, exw, eyw, last_range, HFOV, VFOV)
+                    est = tca.update(np.asarray(zw, float), dt); seen = True
+                else:
+                    pr = tca.predict_only(dt); seen = False
+                    est = pr if pr is not None else np.asarray(tgt, float)
+                twlog.append((now, np.asarray(ego, float).copy(), np.asarray(tgt, float).copy(),
+                              np.asarray(est, float).copy(), seen))
 
             # ---- annotate + record ----
             ann = scene.copy()
@@ -538,6 +553,11 @@ def main():
             print(f"[traj] wrote {cfile} ({len(traj)} samples)")
         except Exception as e:
             print(f"[traj] write failed: {e}")
+        # dual-trajectory MAP (chaser + target world paths, predicted-through-loss highlighted)
+        try:
+            plot_trajectories(twlog, str(Path(args.out) / "trajectory_map.png"))
+        except Exception as e:
+            print(f"[traj] map failed: {e}")
         # persist a metrics file so results survive any stdout buffering
         try:
             mfile = Path(args.out) / "scenario_metrics.txt"
