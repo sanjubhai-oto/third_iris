@@ -186,7 +186,7 @@ def main():
     # CONSTANT-ACCEL Kalman on the target WORLD position (reused from AirSim; gating dropped world-est
     # error 8.5->1.3m there). Fed every detected frame -> follows the orbit CURVE (accel state) and
     # coasts on that curve when vision saturates point-blank, far better than a constant-velocity coast.
-    tca = TargetCA(q=4.0, r=0.5)
+    tca = TargetCA(q=1.2, r=0.6)        # lower process noise -> smoother velocity (don't chase depth noise)
     Pt = None; Vt = np.zeros(3)
     last = time.time(); simt = 0.0
     log = []                                 # (t, seen, ex, ey, range, ego(3), tgt_truth(3))
@@ -270,8 +270,9 @@ def main():
             # far better than a constant-velocity blind coast.
             cur_range = float(np.linalg.norm(Pt - ego))
             min_range = min(min_range, cur_range)
-            t_go = cur_range / max(1.0, args.intercept_speed)
-            pip = Pt + Vt * t_go + 0.5 * tca.x[6:9] * t_go * t_go   # PIP with accel (curve) lead
+            t_go = min(0.8, cur_range / max(1.0, args.intercept_speed))   # cap lookahead -> bounded lead
+            Vlead = np.clip(Vt, -6, 6)                                    # cap velocity lead (reject spikes)
+            pip = Pt + Vlead * t_go                                       # PIP (no noisy accel term)
             dirv = pip - ego; n = np.linalg.norm(dirv)
             if n > 1e-3:
                 cmd = dirv / n * args.intercept_speed
