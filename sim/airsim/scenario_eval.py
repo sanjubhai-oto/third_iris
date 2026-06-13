@@ -354,7 +354,12 @@ def main():
                 # so a fast lateral target stays in frame and re-acquires, instead of leaving the view.
                 if cur is not None:
                     imk.update(ex, ey, dt)
-                    ex_s, ey_s = float(ex), float(ey)                      # RAW measurement -> tight centering
+                    # DJI-style: drive on the KALMAN-FILTERED position + a small velocity LEAD, not the raw
+                    # jittery bbox center. Filtering removes detection shake; the lead keeps the target
+                    # centered as it moves (anticipates instead of lagging).
+                    LEAD = 0.12
+                    ex_s = float(imk.x[0] + imk.x[2] * LEAD)
+                    ey_s = float(imk.x[1] + imk.x[3] * LEAD)
                     if dval and dval > 0.3:
                         last_range = 0.5 * float(dval) + 0.5 * last_range   # smooth + hold the range
                     coasting = False
@@ -373,10 +378,15 @@ def main():
                     err_r = rng - args.gap
                     kf = 0.6 if err_r > 0 else 1.3
                     fwd = float(np.clip(kf * err_r, -eff_speed, eff_speed)) * (0.4 if coasting else 1.0)
-                    vz_b = float(np.clip(2.2 * ey_s, -2.8, 2.8))
-                    bearing = math.degrees(math.atan(ex_s * math.tan(math.radians(HFOV / 2))))
+                    # DEADBAND: ignore tiny centered errors so the drone holds steady instead of hunting/
+                    # jittering when the target is already centered (soft -> no discontinuity at the edge).
+                    DB = 0.04
+                    exd = 0.0 if abs(ex_s) < DB else ex_s - math.copysign(DB, ex_s)
+                    eyd = 0.0 if abs(ey_s) < DB else ey_s - math.copysign(DB, ey_s)
+                    vz_b = float(np.clip(2.4 * eyd, -2.8, 2.8))
+                    bearing = math.degrees(math.atan(exd * math.tan(math.radians(HFOV / 2))))
                     yaw_err = bearing
-                    yr = float(np.clip(1.9 * bearing, -55, 55))
+                    yr = float(np.clip(2.0 * bearing, -55, 55))
                     # ANTI-WHIP: rate-limit yaw + forward so the body-fixed camera can't slew violently on
                     # fast reversals (zigzag/recede) and blur/lose the target. (measured whip hit 127 deg/s)
                     yr = prev_yr + float(np.clip(yr - prev_yr, -YAW_ACC * dt, YAW_ACC * dt))
