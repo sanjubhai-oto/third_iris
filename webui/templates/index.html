@@ -223,6 +223,16 @@
 
     <!-- SIDEBAR -->
     <aside>
+      <!-- 3-D location map (secondary; the live video is the primary view) -->
+      <div class="card">
+        <h2>3-D location map — chaser &amp; target</h2>
+        <canvas id="map3d" width="360" height="240"
+                style="width:100%; background:#0d1321; border-radius:8px; cursor:grab; display:block;"></canvas>
+        <div style="font-size:11px;color:#7f8c9b;margin-top:6px;">
+          <span style="color:#3aa0ff;">●</span> chaser &nbsp;<span style="color:#39e6a3;">●</span> target &nbsp;·&nbsp;
+          drag to rotate · N/E ground, Up = altitude (drop-lines = height)
+        </div>
+      </div>
       <!-- Telemetry -->
       <div class="card">
         <h2>Telemetry</h2>
@@ -474,7 +484,82 @@
 
     setVal("shadows", t.shadows == null ? "--" : String(t.shadows));
     setVal("fps", fmt(t.fps, 1));
+    Map3D.update(t);
   }
+
+  // ---- 3-D location map (chaser + target world trajectories), vanilla canvas isometric ----
+  var Map3D = (function () {
+    var cv = document.getElementById("map3d"), ctx = cv && cv.getContext("2d");
+    var chaser = [], target = [], az = -0.6, dragging = false, lastX = 0, MAXPTS = 500;
+    function near(a, b) { return a != null && b != null && Math.abs(a - b) < 0.05; }
+    function push(arr, n, e, d) {
+      if (n == null || e == null || d == null) return;
+      var p = arr[arr.length - 1];
+      if (p && near(p.n, n) && near(p.e, e) && near(p.d, d)) return;   // skip duplicates
+      arr.push({ n: n, e: e, d: d }); if (arr.length > MAXPTS) arr.shift();
+    }
+    function bounds() {
+      var all = chaser.concat(target), lo = { n: 1e9, e: 1e9, u: 1e9 }, hi = { n: -1e9, e: -1e9, u: -1e9 };
+      if (!all.length) return null;
+      all.forEach(function (p) {
+        lo.n = Math.min(lo.n, p.n); hi.n = Math.max(hi.n, p.n);
+        lo.e = Math.min(lo.e, p.e); hi.e = Math.max(hi.e, p.e);
+        var u = -p.d; lo.u = Math.min(lo.u, u); hi.u = Math.max(hi.u, u);
+      });
+      return { lo: lo, hi: hi };
+    }
+    function render() {
+      if (!ctx) return;
+      var W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
+      var b = bounds();
+      ctx.fillStyle = "#0d1321"; ctx.fillRect(0, 0, W, H);
+      if (!b) { ctx.fillStyle = "#5c6470"; ctx.font = "14px Segoe UI"; ctx.fillText("waiting for lock… (both paths appear once tracking)", 20, 30); return; }
+      var cn = (b.lo.n + b.hi.n) / 2, ce = (b.lo.e + b.hi.e) / 2;
+      var span = Math.max(8, b.hi.n - b.lo.n, b.hi.e - b.lo.e, b.hi.u - b.lo.u);
+      var s = (Math.min(W, H) * 0.62) / span;
+      var cx = W / 2, cyB = H * 0.72;                       // ground-plane origin on screen
+      var ca = Math.cos(az), sa = Math.sin(az), TILT = 0.5;
+      function proj(p) {
+        var n = p.n - cn, e = p.e - ce, u = -p.d - b.lo.u;  // height above lowest
+        var gx = e * ca - n * sa, gy = e * sa + n * ca;     // rotate ground
+        return { x: cx + gx * s, y: cyB + gy * s * TILT - u * s, gy: cyB + gy * s * TILT };
+      }
+      // ground grid
+      ctx.strokeStyle = "#1c2738"; ctx.lineWidth = 1;
+      for (var g = -2; g <= 2; g++) {
+        var a1 = proj({ n: cn + g * span / 4, e: ce - span / 2, d: -b.lo.u }), a2 = proj({ n: cn + g * span / 4, e: ce + span / 2, d: -b.lo.u });
+        ctx.beginPath(); ctx.moveTo(a1.x, a1.gy); ctx.lineTo(a2.x, a2.gy); ctx.stroke();
+        var b1 = proj({ n: cn - span / 2, e: ce + g * span / 4, d: -b.lo.u }), b2 = proj({ n: cn + span / 2, e: ce + g * span / 4, d: -b.lo.u });
+        ctx.beginPath(); ctx.moveTo(b1.x, b1.gy); ctx.lineTo(b2.x, b2.gy); ctx.stroke();
+      }
+      function drawPath(arr, col) {
+        if (arr.length < 1) return;
+        ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
+        arr.forEach(function (p, i) { var q = proj(p); if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y); });
+        ctx.stroke();
+        var last = arr[arr.length - 1], q = proj(last);
+        ctx.strokeStyle = "#33415544"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(q.x, q.gy); ctx.stroke();  // drop-line
+        ctx.fillStyle = col; ctx.beginPath(); ctx.arc(q.x, q.y, 6, 0, 6.283); ctx.fill();
+      }
+      drawPath(chaser, "#3aa0ff"); drawPath(target, "#39e6a3");
+      ctx.fillStyle = "#7f8c9b"; ctx.font = "11px Segoe UI";
+      ctx.fillText("span ~" + Math.round(span) + " m", 10, 16);
+    }
+    if (cv) {
+      cv.addEventListener("mousedown", function (e) { dragging = true; lastX = e.clientX; cv.style.cursor = "grabbing"; });
+      window.addEventListener("mouseup", function () { dragging = false; if (cv) cv.style.cursor = "grab"; });
+      window.addEventListener("mousemove", function (e) { if (dragging) { az += (e.clientX - lastX) * 0.01; lastX = e.clientX; render(); } });
+    }
+    return {
+      update: function (t) {
+        try {                                   // never let the map break telemetry / video
+          if (t.state === "TRACK") { push(chaser, t.ego_n, t.ego_e, t.ego_d); push(target, t.tgt_n, t.tgt_e, t.tgt_d); }
+          render();
+        } catch (e) { /* ignore map errors */ }
+      },
+      reset: function () { chaser = []; target = []; }
+    };
+  })();
 
   // ---- telemetry poll ----
   function pollTelemetry() {
@@ -553,7 +638,7 @@
       .then(function (r) { markOffline(!r.ok); })
       .catch(function () { markOffline(true); });
   }
-  btnClear.addEventListener("click", function () { postAction("/clear"); });
+  btnClear.addEventListener("click", function () { postAction("/clear"); Map3D.reset(); });
 
   // ---- auto-lock toggle + search button ----
   var autoOn = false, searchOn = false;

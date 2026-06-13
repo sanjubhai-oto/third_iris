@@ -299,6 +299,7 @@ def tracking_loop():
     while G["running"]:
         now = time.time(); dt = min(0.3, max(0.02, now - last)); last = now
         fps = 0.9 * fps + 0.1 * (1.0 / dt)
+        tp = None                                  # target world estimate this frame (set by control)
         if now - traj_t0 > 40:
             cur = new_traj(); traj_t0 = now
         if G["land"]:
@@ -599,7 +600,7 @@ def tracking_loop():
             else:
                 # ===== GPS AVAILABLE: world-frame standoff (pos-P + velocity feed-forward) =====
                 vn, ve, vd, yaw_deg, range_m, yaw_err_deg = standoff_command(
-                    ego_nav, yaw_nav, tp, tv, gap, eff_sp, lead_t=LEAD_T)
+                    ego_nav, yaw_nav, tp, tv, gap, eff_sp, lead_t=LEAD_T, kp_z=0.85)  # gentler vert -> no ring
                 # obstacle avoidance (depth = LiDAR-like): brake + steer around close obstacles
                 if G.get("avoid", True) and v["proto"] == "airsim" and depth is not None:
                     (vn, ve, vd), clearance_m, avoiding = apply_avoidance(
@@ -716,6 +717,10 @@ def tracking_loop():
                         "gap": round(gap, 1), "alt_m": round(-ego[2], 1), "yaw_rate_deg": round(yr_deg, 1),
                         "center_err": center_err,
                         "ego_n": round(ego[0], 1), "ego_e": round(ego[1], 1), "ego_d": round(ego[2], 1),
+                        # target world position (Kalman estimate while tracking) for the 3-D location graph
+                        "tgt_n": round(float(tp[0]), 1) if (state == "TRACK" and tp is not None) else None,
+                        "tgt_e": round(float(tp[1]), 1) if (state == "TRACK" and tp is not None) else None,
+                        "tgt_d": round(float(tp[2]), 1) if (state == "TRACK" and tp is not None) else None,
                         "n_detections": len(real_dets), "vision_rate": round(100*sum(vis_hist)/max(1,len(vis_hist))),
                         # TEAM awareness: every drone tracked this frame (ByteTrack persistent IDs + norm pos)
                         "autolock": bool(G.get("autolock")), "search": bool(G.get("search")),

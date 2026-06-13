@@ -250,10 +250,11 @@ def main():
         imk = ImageKalman(q=2.0, r=0.05)         # image-space bearing predictor (coast through dropouts)
         last_range = float(args.gap)             # hold last good range during a dropout
         COAST_MAX = 6                            # frames to keep panning on prediction before declaring lost
-        prev_yr = 0.0; prev_bfwd = 0.0           # body-servo command smoothing (anti-whip / steady cam)
+        prev_yr = 0.0; prev_bfwd = 0.0; prev_vz = 0.0   # body-servo command smoothing (anti-whip / steady)
         YAW_ACC = 170.0                          # max yaw-rate change (deg/s^2) -> no violent whip on reversals
         FWD_ACC = 6.0                            # forward accel cap: high enough to CHASE a receding target
                                                  # (low values lost it on recede), still bounds pitch a bit
+        VZ_ACC = 3.0                             # vertical accel cap (m/s^2) -> damps the up/down oscillation
         while time.time() - t0 < secs:
             now = time.time(); dt = min(0.3, max(0.02, now - last)); last = now
             scene, depth = grab(ac)
@@ -386,7 +387,9 @@ def main():
                     DB = 0.04
                     exd = 0.0 if abs(ex_s) < DB else ex_s - math.copysign(DB, ex_s)
                     eyd = 0.0 if abs(ey_s) < DB else ey_s - math.copysign(DB, ey_s)
-                    vz_b = float(np.clip(2.4 * eyd, -2.8, 2.8))
+                    vz_raw = float(np.clip(2.0 * eyd, -2.8, 2.8))   # lower gain + rate-limit -> no ringing
+                    vz_b = prev_vz + float(np.clip(vz_raw - prev_vz, -VZ_ACC * dt, VZ_ACC * dt))
+                    prev_vz = vz_b
                     bearing = math.degrees(math.atan(exd * math.tan(math.radians(HFOV / 2))))
                     yaw_err = bearing
                     yr = float(np.clip(2.0 * bearing, -55, 55))
@@ -402,7 +405,7 @@ def main():
                     rng = last_range; yaw_err = 0.0
                     scan = 25.0 * (1.0 if (imk.x is not None and imk.x[0] >= 0) else -1.0)
                     scan = prev_yr + float(np.clip(scan - prev_yr, -YAW_ACC * dt, YAW_ACC * dt))
-                    prev_yr = scan; prev_bfwd = 0.0
+                    prev_yr = scan; prev_bfwd = 0.0; prev_vz = 0.0
                     ac.moveByVelocityBodyFrameAsync(0.0, 0.0, 0.0, 0.4,
                                                     yaw_mode=airsim.YawMode(True, scan), vehicle_name="Ego")
                     if imk.miss > COAST_MAX * 3:
