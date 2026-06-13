@@ -180,6 +180,7 @@ def main():
     VFOV = 2 * math.atan(math.tan(HFOV / 2) * 9 / 16)   # 960x540 -> vertical FOV
     Pt = None; Vt = np.zeros(3); phase = "TRACK"        # target world pos estimate + velocity (for PIP)
     hit = False; hit_t = None; min_range = 1e9
+    track_hist = []                                     # (simt, Pt) during TRACK -> windowed velocity fit
     last = time.time(); simt = 0.0
     log = []                                 # (t, seen, ex, ey, range, ego(3), tgt_truth(3))
     vw = None
@@ -230,14 +231,17 @@ def main():
             vz = float(np.clip(KZ * (rng - args.gap), -eff, eff))   # climb to hold gap (z up +)
             # reconstruct the TARGET WORLD POSITION from the up-cam ray (chaser yaw 0): the ray points
             # up (+Z) tilted by the image offset. Used for the PIP terminal intercept.
-            ray = np.array([ey * math.tan(VFOV / 2), -ex * math.tan(HFOV / 2), 1.0])
-            ray = ray / np.linalg.norm(ray)
-            P_new = ego + rng * ray
-            if Pt is None:
-                Pt = P_new
-            else:
-                Vt = 0.7 * Vt + 0.3 * ((P_new - Pt) / dt)          # EMA target velocity (world)
-                Pt = 0.5 * Pt + 0.5 * P_new                        # EMA target position
+            # Only trust vision-derived target world pos in the TRACK phase (clean standoff geometry).
+            # Close-in (COMMIT) the target saturates the frame + depth -> garbage; we coast instead.
+            if phase == "TRACK" and rng < 60:
+                ray = np.array([ey * math.tan(VFOV / 2), -ex * math.tan(HFOV / 2), 1.0])
+                ray = ray / np.linalg.norm(ray)
+                P_new = ego + rng * ray
+                if Pt is None or np.linalg.norm(P_new - Pt) > 8.0:   # init or reject implausible jump
+                    Pt = P_new
+                else:
+                    Pt = 0.6 * Pt + 0.4 * P_new                      # EMA target position (smoothed)
+                track_hist.append((simt, Pt.copy()))                 # for a clean windowed velocity fit
         else:
             ex = ey = 0.0; rng = float('nan')
             vx = vy = vz = 0.0                                       # lost -> hold (no spin)
@@ -247,21 +251,36 @@ def main():
         # P_t + V_t*t_go at full closing speed -> gap collapses to 0 = kinetic intercept (ram/net), the
         # pattern Ukraine FPV interceptors + Israeli fire-control use. Range from the world estimate so it
         # works even on the frames the detector misses (coast through loss).
-        if args.commit and Pt is not None:
+        if args.commit and Pt is not None and simt >= args.commit_after:
+            if phase != "COMMIT":
+                phase = "COMMIT"
+                # estimate target velocity by a WINDOWED LEAST-SQUARES fit over the last ~2.5 s of the
+                # clean track history (per-frame derivative was 3x too noisy -> 8 m miss). Robust slope.
+                win = [(t, p) for (t, p) in track_hist if t >= simt - 2.5]
+                if len(win) >= 4:
+                    ts = np.array([t for t, _ in win]); ts = ts - ts.mean()
+                    Ps = np.array([p for _, p in win])
+                    denom = float((ts * ts).sum())
+                    Vt = (ts[:, None] * (Ps - Ps.mean(0))).sum(0) / denom if denom > 1e-6 else np.zeros(3)
+                    Vt = np.clip(Vt, -12, 12)
+                print(f"[COMMIT] terminal dash from t={simt:.1f}s; latched target "
+                      f"pos={Pt.round(1)} vel={Vt.round(2)} (windowed fit, coast blind through saturation)",
+                      flush=True)
+            # COAST the target on its latched constant velocity (vision saturates point-blank, so we do
+            # NOT trust close-range detections) -> pure predicted-intercept-point terminal guidance.
+            Pt = Pt + Vt * dt
             cur_range = float(np.linalg.norm(Pt - ego))
             min_range = min(min_range, cur_range)
-            if simt >= args.commit_after:
-                phase = "COMMIT"
-                t_go = cur_range / max(1.0, args.intercept_speed)
-                pip = Pt + Vt * t_go                                # predicted intercept point (lead)
-                dirv = pip - ego; n = np.linalg.norm(dirv)
-                if n > 1e-3:
-                    cmd = dirv / n * args.intercept_speed
-                    vx, vy, vz = float(cmd[0]), float(cmd[1]), float(cmd[2])
-                if cur_range < args.hit_radius and not hit:
-                    hit = True; hit_t = simt
-                    print(f"[INTERCEPT] HIT at t={simt:.1f}s range={cur_range:.2f}m "
-                          f"(target world {Pt.round(1)}, chaser {ego.round(1)})", flush=True)
+            t_go = cur_range / max(1.0, args.intercept_speed)
+            pip = Pt + Vt * t_go                                    # predicted intercept point (PN lead)
+            dirv = pip - ego; n = np.linalg.norm(dirv)
+            if n > 1e-3:
+                cmd = dirv / n * args.intercept_speed
+                vx, vy, vz = float(cmd[0]), float(cmd[1]), float(cmd[2])
+            if cur_range < args.hit_radius and not hit:
+                hit = True; hit_t = simt
+                print(f"[INTERCEPT] HIT at t={simt:.1f}s range={cur_range:.2f}m "
+                      f"target~{Pt.round(1)} chaser~{ego.round(1)}", flush=True)
 
         # accel-limit -> steady platform (looser in COMMIT so the terminal dash can accelerate)
         fa = 12.0 if phase == "COMMIT" else FWD_ACC
@@ -301,9 +320,14 @@ def main():
     vgap = np.array([(r[6][2] - r[5][2]) for r in log])
     vgap_err = np.sqrt(np.mean((vgap - args.gap) ** 2)) if len(vgap) else float('nan')
     hsep = np.array([math.hypot(r[6][0]-r[5][0], r[6][1]-r[5][1]) for r in log])
+    true_sep = np.array([np.linalg.norm(r[6] - r[5]) for r in log])   # TRUE chaser<->target distance
     print("\n================ GZ UP-CAM TRACK ================")
     print(f"pattern={args.pattern} frames={frames} in-frame={inframe:.1f}% "
           f"center_err={cerr:.3f} vgap_RMS={vgap_err:.2f}m horiz_sep[mean/max]={hsep.mean():.1f}/{hsep.max():.1f}m")
+    if args.commit:
+        print(f"INTERCEPT: {'HIT' if hit else 'MISS'} "
+              f"{'at t=%.1fs ' % hit_t if hit else ''}| TRUE closest approach={true_sep.min():.2f}m "
+              f"(hit_radius={args.hit_radius}m)")
     print(f"video -> {args.out}/gz_up_track.mp4")
 
     # trajectory plot
