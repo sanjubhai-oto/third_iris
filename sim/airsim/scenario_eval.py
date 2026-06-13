@@ -195,23 +195,23 @@ def main():
     ac.reset(); time.sleep(2.0)
     for v in ("Ego", "Target"):
         ac.enableApiControl(True, v); ac.armDisarm(True, v)
-    print("[setup] taking off both vehicles (launch alt ~5m)", flush=True)
-    ft = ac.takeoffAsync(vehicle_name="Target"); fe = ac.takeoffAsync(vehicle_name="Ego")
-    ft.join(); fe.join()
-    # honour 'launch from 5m' then climb to the clear operating altitude before the test
-    ac.moveToZAsync(-START_ALT, 2.5, vehicle_name="Ego").join()
-    print(f"[setup] Ego launched at {START_ALT:.0f}m; climbing both to {OP_ALT:.0f}m (clear air)", flush=True)
-
-    # place Ego at (0,0,-EGO_ALT) facing +N; Target START_RANGE ahead (+N) facing the Ego
     EGO_ALT = float(args.ego_alt) if args.ego_alt is not None else OP_ALT   # chaser start alt (low = climb test)
-    ego_w = np.array([0.0, 0.0, -EGO_ALT])
+    # ---- LAUNCH THE TARGET FIRST -> into the air, then launch the chaser (real sequence) ----
     tgt_w = SAFE_CENTER.copy()
-    el = ego_w - EGO_HOME; tl = tgt_w - TARGET_HOME
-    ac.moveToPositionAsync(float(el[0]), float(el[1]), float(el[2]), 4,
-                           yaw_mode=airsim.YawMode(False, 0.0), vehicle_name="Ego")
+    ego_w = np.array([0.0, 0.0, -EGO_ALT])
+    tl = tgt_w - TARGET_HOME; el = ego_w - EGO_HOME
+    print("[setup] (1) launching TARGET into the air first...", flush=True)
+    ac.takeoffAsync(vehicle_name="Target").join()
     ac.moveToPositionAsync(float(tl[0]), float(tl[1]), float(tl[2]), 4,
                            yaw_mode=airsim.YawMode(False, 180.0), vehicle_name="Target").join()
-    time.sleep(2.0)
+    print(f"[setup]     target airborne @ {OP_ALT:.0f}m, {START_RANGE:.0f}m ahead", flush=True)
+    time.sleep(1.0)
+    print("[setup] (2) launching CHASER...", flush=True)
+    ac.takeoffAsync(vehicle_name="Ego").join()
+    ac.moveToPositionAsync(float(el[0]), float(el[1]), float(el[2]), 3,
+                           yaw_mode=airsim.YawMode(False, 0.0), vehicle_name="Ego").join()
+    print(f"[setup]     chaser launched @ {EGO_ALT:.0f}m", flush=True)
+    time.sleep(1.5)
     # collision-info baseline (to detect NEW collisions during the run)
     coll_count = {"Ego": 0, "Target": 0}
     coll_stamp = {v: ac.simGetCollisionInfo(vehicle_name=v).time_stamp for v in ("Ego", "Target")}

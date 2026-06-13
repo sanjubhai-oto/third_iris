@@ -79,9 +79,12 @@ class TargetCA:
         return self.x[:3].copy()
 
     def predict_only(self, dt):
-        """No detection this frame -> coast on the constant-accel model. Returns predicted pos or None."""
+        """No detection this frame -> coast. DECAY acceleration (then velocity over long gaps) so a
+        constant-accel extrapolation can't blow up to hundreds of metres during a long dropout."""
         if self.x is None:
             return None
+        self.x[6:9] *= 0.5          # kill accel extrapolation fast -> coast ~constant-velocity
+        self.x[3:6] *= 0.97         # slowly bleed velocity too (a long-lost target shouldn't fly off)
         self._predict(max(1e-3, dt))
         return self.x[:3].copy()
 
