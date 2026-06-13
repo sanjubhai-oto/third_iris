@@ -24,13 +24,24 @@ could not produce (that build has no up camera).
 - Detector: YOLO at **imgsz 960** needed (640 → 15% recall on small targets). Classical blob is fast but
   DIVERGES (locks cloud/horizon dark regions); a temporal gate helps but YOLO is the reliable choice.
 
-**Terminal intercept (track-then-commit) — PARTIAL, honest miss**
-- Pattern: track at gap 12 m, then commit → dash onto the predicted-intercept-point (PIP/PN lead),
-  coasting blind through point-blank vision saturation.
-- Result: estimate declares HIT (1.3 m) but **TRUE closest approach = 5.4 m** (was 8.0 m before the
-  windowed-velocity-fit fix). NOT a reliable kill. Bottleneck = target world-position estimate error
-  (~2 m depth/ray) growing during the blind coast on a curving target — the known hard point-blank
-  problem. Reported as TRUE miss so a false-positive estimate-HIT isn't mistaken for a real kill.
+**Terminal intercept (track-then-commit) — SOLVED (reliable kinetic kill)**
+- Pattern: track at gap 12 m, then commit → dash onto the predicted-intercept-point (PIP/PN lead).
+- Fix: reuse the proven **TargetCA** (9-state constant-accel Kalman) for the target world track, fed
+  vision+depth INTO the dash (its outlier gate rejects point-blank garbage; it coasts on the accel
+  state = the orbit curve when saturated). Smoother tuning (q 1.2) + capped velocity lead.
+- Result: TRUE closest approach **1.07 / 0.96 / 1.13 m** over 3 runs (was 8.0 → 5.4 → ~1.0). All under
+  the 1.5 m hit radius; target span ~2.5 m → center-to-center ~1 m = physical collision = reliable hit.
+  (Earlier EMA/windowed-CV blind coast gave 5–8 m miss; the CA filter following the curve fixed it.)
+
+**Team sky monitor (multi-target) — PARTIAL**
+- One up-cam, 3 drones overhead, YOLO + ByteTrack. At ~10 m only 1–2 of 3 detected (small clustered
+  same-model targets); at ~5 m **all 3 seen in 98% of frames** (≥2 in 100%).
+- Open items: over-counts (duplicate boxes/drone → needs class-agnostic NMS) and ByteTrack churns IDs
+  (44 unique, 2 persistent) → needs appearance **re-ID (StrongSORT)** for stable per-drone identity.
+
+**GUI in WSLg — working.** gz GUI as root under software GL opens 1×1 + unmapped (taskbar icon, no
+window). Fix in launch_gui.sh: XDG_RUNTIME_DIR for root + force xcb + xdotool resize/map. Docked
+up-camera Image Display panel (gui_upcam.config) shows the drone's-eye sky view.
 
 ## WSL/Gazebo engineering cracked (so this is reproducible)
 - Camera never rendered headless until: (1) `GZ_SIM_SERVER_CONFIG_PATH` = PX4 gz_bridge/server.config

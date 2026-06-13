@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>THIRD IRIS — Vision-Only UAV Navigation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#070b11; --bg2:#0c121b; --panel:#101824; --line:#1e2a3a; --line2:#2c3d55;
+    --ink:#e9eef6; --mut:#8295ad; --dim:#4d6076;
+    --acc:#ff5c1a; --cyan:#3fd2ff; --grn:#3ee08c; --red:#ff4d5e; --amb:#ffc233;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{background:#02050a}
+  body{font-family:'Space Grotesk',sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+  .mono{font-family:'IBM Plex Mono',monospace}
+  .page{width:1280px;height:720px;margin:28px auto;position:relative;overflow:hidden;
+        background:var(--bg);border:1px solid var(--line);page-break-after:always;break-after:page}
+  .page::after{content:"";position:absolute;inset:0;pointer-events:none;
+        background:repeating-linear-gradient(0deg,transparent 0 3px,rgba(255,255,255,.012) 3px 4px)}
+  .pad{position:absolute;inset:56px 64px}
+  .klabel{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.32em;text-transform:uppercase;color:var(--acc)}
+  .klabel.c{color:var(--cyan)} .klabel.g{color:var(--grn)} .klabel.r{color:var(--red)} .klabel.a{color:var(--amb)}
+  .pageno{position:absolute;right:64px;bottom:34px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--dim);letter-spacing:.25em}
+  .footrule{position:absolute;left:64px;right:64px;bottom:56px;border-top:1px solid var(--line)}
+  .footbrand{position:absolute;left:64px;bottom:34px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--dim);letter-spacing:.25em}
+  h1{font-size:88px;line-height:.98;font-weight:700;letter-spacing:-.02em}
+  h2{font-size:54px;line-height:1.02;font-weight:700;letter-spacing:-.015em}
+  h3{font-size:20px;font-weight:500}
+  .lead{font-size:19px;line-height:1.6;color:var(--mut);font-weight:300}
+  .corner{position:absolute;width:22px;height:22px;border-color:var(--line2);border-style:solid;border-width:0}
+  .c-tl{top:18px;left:18px;border-top-width:1px;border-left-width:1px}
+  .c-tr{top:18px;right:18px;border-top-width:1px;border-right-width:1px}
+  .c-bl{bottom:18px;left:18px;border-bottom-width:1px;border-left-width:1px}
+  .c-br{bottom:18px;right:18px;border-bottom-width:1px;border-right-width:1px}
+  .img{position:relative;border:1px solid var(--line2);background:#000}
+  .img img{display:block;width:100%;height:100%;object-fit:cover;opacity:.92}
+  .img .tag{position:absolute;left:0;bottom:0;background:rgba(7,11,17,.85);border-top:1px solid var(--line2);border-right:1px solid var(--line2);
+        font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.18em;color:var(--cyan);padding:6px 10px;text-transform:uppercase}
+  .bigstat .v{font-size:64px;font-weight:700;letter-spacing:-.02em;line-height:1}
+  .bigstat .l{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--mut);margin-top:10px}
+  .rule{border-top:1px solid var(--line)}
+  .chip{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.2em;text-transform:uppercase;
+        border:1px solid var(--line2);color:var(--mut);padding:7px 14px}
+  ul.feat{list-style:none}
+  ul.feat li{position:relative;padding:0 0 0 26px;margin-bottom:16px;font-size:16.5px;line-height:1.5;color:var(--ink);font-weight:300}
+  ul.feat li::before{content:"";position:absolute;left:0;top:9px;width:12px;height:1px;background:var(--acc)}
+  ul.feat li b{font-weight:500}
+  table.spec{width:100%;border-collapse:collapse;font-size:14.5px}
+  table.spec td,table.spec th{padding:13px 4px;border-bottom:1px solid var(--line);text-align:left}
+  table.spec th{font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);font-weight:400}
+  table.spec td:last-child,table.spec th:last-child{text-align:right}
+  @media print{
+    body{background:#fff}
+    .page{margin:0;border:none}
+    @page{size:1280px 720px;margin:0}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ 01 / COVER ============ -->
+<div class="page">
+  <div class="corner c-tl"></div><div class="corner c-tr"></div><div class="corner c-bl"></div><div class="corner c-br"></div>
+  <img src="ppt_assets/lite/sim_track_0.jpg" style="position:absolute;right:0;top:0;height:720px;width:600px;object-fit:cover;opacity:.62">
+  <div style="position:absolute;right:0;top:0;height:720px;width:600px;background:linear-gradient(90deg,var(--bg) 0%,rgba(7,11,17,.25) 60%,rgba(7,11,17,.45) 100%)"></div>
+  <svg style="position:absolute;right:150px;top:170px" width="200" height="200" viewBox="0 0 200 200" fill="none">
+    <circle cx="100" cy="100" r="84" stroke="#3fd2ff" stroke-opacity=".5" stroke-width="1" stroke-dasharray="3 7"/>
+    <circle cx="100" cy="100" r="50" stroke="#ff5c1a" stroke-width="1"/>
+    <line x1="100" y1="0" x2="100" y2="36" stroke="#ff5c1a" stroke-width="1"/>
+    <line x1="100" y1="164" x2="100" y2="200" stroke="#ff5c1a" stroke-width="1"/>
+    <line x1="0" y1="100" x2="36" y2="100" stroke="#ff5c1a" stroke-width="1"/>
+    <line x1="164" y1="100" x2="200" y2="100" stroke="#ff5c1a" stroke-width="1"/>
+    <circle cx="100" cy="100" r="3" fill="#ff5c1a"/>
+  </svg>
+  <div class="mono" style="position:absolute;right:150px;top:380px;font-size:10px;letter-spacing:.2em;color:var(--cyan)">TGT LOCKED · RNG 12.0M · VISION ONLY</div>
+  <div class="pad">
+    <div style="display:flex;align-items:center;gap:14px">
+      <div style="width:34px;height:34px;border:1px solid var(--acc);position:relative">
+        <div style="position:absolute;inset:9px;background:var(--acc)"></div>
+      </div>
+      <div class="mono" style="font-size:13px;letter-spacing:.4em;color:var(--ink)">THIRD IRIS</div>
+    </div>
+    <div style="margin-top:92px">
+      <div class="klabel">Autonomy proposal · 2026</div>
+      <h1 style="margin-top:24px;max-width:680px;font-size:76px">SEES.<br>TRACKS.<br><span style="color:var(--acc)">NEEDS NO GPS.</span></h1>
+      <p class="lead" style="margin-top:26px;max-width:500px;font-size:17px">An aerial system that detects, follows and intercepts a moving target — and navigates itself — using nothing but a camera, even under full GPS jamming.</p>
+    </div>
+    <div style="position:absolute;bottom:0;left:0;display:flex;gap:14px">
+      <span class="chip" style="color:var(--grn);border-color:#1d4a35">Sim-proven</span>
+      <span class="chip" style="color:var(--cyan);border-color:#1d3d4a">Real-data trained</span>
+      <span class="chip">Hardware-ready path</span>
+    </div>
+  </div>
+  <div class="pageno">01 / 11</div>
+</div>
+
+<!-- ============ 02 / PROBLEM ============ -->
+<div class="page">
+  <div class="pad">
+    <div class="klabel r">The problem</div>
+    <h2 style="margin-top:20px;max-width:760px">GPS is the single point of failure modern conflict exploits.</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:60px;margin-top:54px">
+      <div>
+        <div style="border:1px solid #4a1d24;background:#160a0e;padding:28px 30px">
+          <div class="mono" style="font-size:11px;letter-spacing:.25em;color:var(--red)">GPS-DEPENDENT DRONE</div>
+          <div style="margin-top:18px;font-size:17px;line-height:1.65;color:var(--mut);font-weight:300">
+            Jammed → blind. Spoofed → hijacked. In contested airspace, satellite navigation is the first thing to die — and the aircraft dies with it.
+          </div>
+          <div class="mono" style="margin-top:20px;font-size:34px;color:var(--red)">✕ MISSION LOST</div>
+        </div>
+      </div>
+      <div>
+        <div style="border:1px solid #1d4a35;background:#0a1610;padding:28px 30px">
+          <div class="mono" style="font-size:11px;letter-spacing:.25em;color:var(--grn)">VISION-DRIVEN DRONE</div>
+          <div style="margin-top:18px;font-size:17px;line-height:1.65;color:var(--mut);font-weight:300">
+            Cameras are passive. Nothing to jam, nothing to spoof, no emissions to detect. If the aircraft can see, it can navigate, track and finish the mission.
+          </div>
+          <div class="mono" style="margin-top:20px;font-size:34px;color:var(--grn)">✓ MISSION CONTINUES</div>
+        </div>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:48px;max-width:880px">Ukraine-era electronic warfare made this concrete: drones that rely on GPS are being neutralized by jammers costing less than the airframe. <span style="color:var(--ink);font-weight:400">The eye is the backup that cannot be jammed.</span></p>
+  </div>
+  <div class="footrule"></div><div class="footbrand">THIRD IRIS · VISION-ONLY AUTONOMY</div>
+  <div class="pageno">02 / 11</div>
+</div>
+
+<!-- ============ 03 / CONCEPT ============ -->
+<div class="page">
+  <div class="pad">
+    <div class="klabel c">System concept</div>
+    <h2 style="margin-top:20px">One camera. Two minds.</h2>
+    <p class="lead" style="margin-top:18px;max-width:860px">Every frame is consumed twice — <span style="color:var(--ink)">tracking</span> (detector → tracker → Kalman → body-frame servo) and <span style="color:var(--ink)">self-localization</span> (VIO fuses camera + IMU). No absolute position is ever needed, so jamming has nothing to attack.</p>
+    <div style="display:flex;gap:0;margin-top:56px;align-items:stretch">
+      <!-- five stages -->
+      <div style="flex:1;border:1px solid var(--line2);border-right:none;padding:24px 20px;background:var(--bg2)">
+        <div class="mono" style="font-size:10px;letter-spacing:.25em;color:var(--cyan)">01 · SEE</div>
+        <div style="font-size:21px;font-weight:500;margin-top:12px">Detect</div>
+        <div style="font-size:13.5px;color:var(--mut);margin-top:8px;line-height:1.5;font-weight:300">YOLO detector + instance segmentation, per frame</div>
+      </div>
+      <div style="flex:1;border:1px solid var(--line2);border-right:none;padding:24px 20px;background:var(--bg2)">
+        <div class="mono" style="font-size:10px;letter-spacing:.25em;color:var(--grn)">02 · TRACK</div>
+        <div style="font-size:21px;font-weight:500;margin-top:12px">Lock &amp; predict</div>
+        <div style="font-size:13.5px;color:var(--mut);margin-top:8px;line-height:1.5;font-weight:300">ByteTrack + re-ID + image-space Kalman; coasts dropouts</div>
+      </div>
+      <div style="flex:1;border:1px solid var(--line2);border-right:none;padding:24px 20px;background:var(--bg2)">
+        <div class="mono" style="font-size:10px;letter-spacing:.25em;color:var(--cyan)">03 · LOCATE</div>
+        <div style="font-size:21px;font-weight:500;margin-top:12px">Self-position</div>
+        <div style="font-size:13.5px;color:var(--mut);margin-top:8px;line-height:1.5;font-weight:300">Visual-inertial odometry (VIO / VINS) — zero GPS</div>
+      </div>
+      <div style="flex:1;border:1px solid var(--line2);border-right:none;padding:24px 20px;background:var(--bg2)">
+        <div class="mono" style="font-size:10px;letter-spacing:.25em;color:var(--amb)">04 · AVOID</div>
+        <div style="font-size:21px;font-weight:500;margin-top:12px">Dodge</div>
+        <div style="font-size:13.5px;color:var(--mut);margin-top:8px;line-height:1.5;font-weight:300">Depth-as-LiDAR repulsion — pursuit unbroken</div>
+      </div>
+      <div style="flex:1;border:1px solid var(--acc);padding:24px 20px;background:#170d07">
+        <div class="mono" style="font-size:10px;letter-spacing:.25em;color:var(--acc)">05 · ACT</div>
+        <div style="font-size:21px;font-weight:500;margin-top:12px">Follow / intercept</div>
+        <div style="font-size:13.5px;color:var(--mut);margin-top:8px;line-height:1.5;font-weight:300">Body-frame visual servoing · RL pilot @ 10 Hz</div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:46px;border-top:1px solid var(--line);padding-top:26px">
+      <div class="bigstat"><div class="v" style="color:var(--cyan)">10<span style="font-size:30px;color:var(--mut)"> Hz</span></div><div class="l">Onboard control loop</div></div>
+      <div class="bigstat"><div class="v" style="color:var(--grn)">2</div><div class="l">Independent pipelines, one sensor</div></div>
+      <div class="bigstat"><div class="v" style="color:var(--acc)">0</div><div class="l">Satellites required</div></div>
+      <div class="bigstat"><div class="v">0.80<span style="font-size:26px;color:var(--mut)"> / .97</span></div><div class="l">Detect mAP · real / sim</div></div>
+    </div>
+  </div>
+  <div class="footrule"></div><div class="footbrand">THIRD IRIS · VISION-ONLY AUTONOMY</div>
+  <div class="pageno">03 / 11</div>
+</div>
+
+<!-- ============ 04 / PERCEPTION (REAL DETECTIONS) ============ -->
+<div class="page">
+  <div class="pad">
+    <div style="display:grid;grid-template-columns:430px 1fr;gap:54px;height:100%">
+      <div>
+        <div class="klabel">Perception</div>
+        <h2 style="margin-top:20px;font-size:46px">Trained on the real threat.</h2>
+        <p class="lead" style="margin-top:20px;font-size:16.5px">Not just simulation. The detector is fine-tuned on <span style="color:var(--ink)">~50,000 real images</span> of Shahed-type loitering munitions and quadcopters — plus a bird class so it never chases the wrong wings.</p>
+        <div style="margin-top:34px;display:grid;grid-template-columns:1fr 1fr;gap:26px">
+          <div class="bigstat"><div class="v" style="color:var(--acc);font-size:54px">0.77</div><div class="l">mAP50 · real held-out</div></div>
+          <div class="bigstat"><div class="v" style="font-size:54px">0.97</div><div class="l">mAP50 · sim target</div></div>
+        </div>
+        <div class="mono" style="margin-top:30px;font-size:11px;letter-spacing:.18em;color:var(--dim);line-height:2">DATASETS · SHAHED 50K / MJOLNIR 1.2K / AIRSIM SYNTH<br>CLASSES · DRONE + BIRD (FALSE-LOCK FILTER)</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:14px">
+        <div class="img"><img src="ppt_assets/lite/real_det_0.jpg"><div class="tag">LIVE INFERENCE · REAL FRAME</div></div>
+        <div class="img"><img src="ppt_assets/lite/real_det_2.jpg"><div class="tag">SHAHED · DETECTED</div></div>
+        <div class="img"><img src="ppt_assets/lite/real_det_3.jpg"><div class="tag">LOW-CONTRAST SKY</div></div>
+        <div class="img"><img src="ppt_assets/lite/real_det_1.jpg"><div class="tag">SMALL TARGET · LOCKED</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="pageno">04 / 11</div>
+</div>
+
+<!-- ============ 05 / TRAINING ============ -->
+<div class="page">
+  <div class="pad">
+    <div class="klabel g">Training &amp; validation</div>
+    <h2 style="margin-top:20px">It copies a master. Then it beats him.</h2>
+    <div style="display:grid;grid-template-columns:1fr 470px;gap:60px;margin-top:44px">
+      <div>
+        <ul class="feat" style="margin-top:6px">
+          <li><b>Segment &amp; filter</b> — real + synthetic footage is mask-labeled; birds, clutter and shadows are explicitly trained out.</li>
+          <li><b>Imitate</b> — a neural pilot learns by copying a hand-built expert across thousands of randomized pursuit episodes (the Skydio recipe).</li>
+          <li><b>Exceed</b> — reinforcement learning then trains past the teacher under realistic flight dynamics, noise and detector drop-outs.</li>
+          <li><b>Prove</b> — every build re-flies orbit, zigzag, weave, climb and dive scenarios in simulation. Numbers or it didn't happen.</li>
+        </ul>
+        <div class="mono" style="margin-top:26px;font-size:11px;letter-spacing:.2em;color:var(--dim)">PIPELINE · DATA → SEGMENT → FILTER → IMITATE → RL → SIM-TEST</div>
+      </div>
+      <div>
+        <table class="spec">
+          <tr><th>Metric</th><th>Hand-built expert</th><th style="color:var(--acc)">Learned pilot</th></tr>
+          <tr><td>Target kept in frame</td><td>100%</td><td style="color:var(--grn)">99.9%</td></tr>
+          <tr><td>Centering error</td><td>0.263</td><td style="color:var(--grn)">0.107 · 2.5× tighter</td></tr>
+          <tr><td>Stand-off hold error</td><td>7.2 m</td><td style="color:var(--grn)">4.3 m · 40% better</td></tr>
+          <tr><td>Survives detector drop-outs</td><td>partially</td><td style="color:var(--grn)">yes — trained on them</td></tr>
+        </table>
+        <div class="mono" style="margin-top:18px;font-size:10.5px;letter-spacing:.18em;color:var(--dim)">300 IDENTICAL EPISODES · REALISTIC ACTUATOR LAG · MEASURED, NOT CLAIMED</div>
+      </div>
+    </div>
+  </div>
+  <div class="footrule"></div><div class="footbrand">THIRD IRIS · VISION-ONLY AUTONOMY</div>
+  <div class="pageno">05 / 11</div>
+</div>
+
+<!-- ============ 06 / TRACKING + WEB UI ============ -->
+<div class="page">
+  <div class="pad">
+    <div style="display:grid;grid-template-columns:1fr 640px;gap:50px;height:100%">
+      <div>
+        <div class="klabel g">Target following</div>
+        <h2 style="margin-top:20px;font-size:46px">Click the target. The aircraft does the rest.</h2>
+        <ul class="feat" style="margin-top:30px">
+          <li><b>Click-to-lock</b> in a live ground-station web UI — one operator, one click.</li>
+          <li><b>Predictive lock</b> — a motion model leads the target and coasts straight through detection gaps.</li>
+          <li><b>Stand-off hold</b> — keeps a chosen distance; speeds match, no spiral, no overshoot.</li>
+          <li><b>~90% in-frame</b> through aggressive evasive maneuvers, vision only.</li>
+        </ul>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="img" style="flex:1"><img src="ppt_assets/lite/webui_live.jpg"><div class="tag">GROUND STATION // LIVE LOCK + DEPTH + TELEMETRY</div></div>
+        <div style="display:flex;gap:12px;flex:1">
+          <div class="img" style="flex:1"><img src="ppt_assets/lite/sim_track_0.jpg"><div class="tag">LIVE PURSUIT // ORBIT 9.3M</div></div>
+          <div class="img" style="flex:1"><img src="ppt_assets/lite/sim_track_3.jpg"><div class="tag">LIVE PURSUIT // ZIGZAG LOCK</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="pageno">06 / 11</div>
+</div>
+
+<!-- ============ 07 / VIO ============ -->
+<div class="page">
+  <div class="pad">
+    <div style="display:grid;grid-template-columns:600px 1fr;gap:54px;height:100%">
+      <div class="img" style="height:566px"><img src="ppt_assets/lite/sim_trajectory.jpg"><div class="tag">LIVE RUN // PURSUIT PATH + ALT HOLD</div></div>
+      <div>
+        <div class="klabel c">Self-localization</div>
+        <h2 style="margin-top:20px;font-size:44px">It knows where it is. Without being told.</h2>
+        <ul class="feat" style="margin-top:28px">
+          <li><b>Visual-inertial odometry</b> — camera motion + IMU fused into a live position estimate; the same math inside VINS-class flight systems.</li>
+          <li><b>Depth sensing</b> — true metric distance to the scene and the target.</li>
+          <li><b>SLAM-style drift correction</b> — recognizing seen places snaps the estimate back.</li>
+          <li><b>Compass-bounded heading</b> — yaw can't silently wander.</li>
+        </ul>
+        <div style="display:flex;gap:40px;margin-top:36px;border-top:1px solid var(--line);padding-top:24px">
+          <div class="bigstat"><div class="v" style="font-size:46px;color:var(--cyan)">GPS ▸ ON</div><div class="l">Vision + satellites fused</div></div>
+          <div class="bigstat"><div class="v" style="font-size:46px;color:var(--acc)">GPS ▸ JAMMED</div><div class="l">Seamless switch to vision-only</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="pageno">07 / 11</div>
+</div>
+
+<!-- ============ 08 / AVOIDANCE ============ -->
+<div class="page">
+  <div class="pad">
+    <div style="display:grid;grid-template-columns:1fr 600px;gap:54px;height:100%">
+      <div>
+        <div class="klabel a">Flight safety</div>
+        <h2 style="margin-top:20px;font-size:46px">Dodges the world. Keeps the lock.</h2>
+        <ul class="feat" style="margin-top:30px">
+          <li><b>Depth-as-LiDAR</b> — the depth image is read as a wall of distances, hundreds of rays per frame, no extra sensor.</li>
+          <li><b>Reactive steering</b> — repulsion from close obstacles bends the flight path around buildings, terrain, wires.</li>
+          <li><b>Pursuit-preserving</b> — avoidance and tracking blend; the target stays framed while the aircraft threads the gap.</li>
+          <li><b>Zero collisions</b> across the full simulated scenario suite.</li>
+        </ul>
+        <div class="mono" style="margin-top:34px;font-size:11px;letter-spacing:.2em;color:var(--dim)">RUNS FULLY ONBOARD · NO PRIOR MAP · NO RF EMISSIONS</div>
+      </div>
+      <div class="img" style="height:566px"><img src="ppt_assets/lite/airsim_depth.jpg"><div class="tag">LIVE DEPTH FIELD // RANGE-BANDED</div></div>
+    </div>
+  </div>
+  <div class="pageno">08 / 11</div>
+</div>
+
+<!-- ============ 09 / APPLICATIONS ============ -->
+<div class="page">
+  <div class="pad">
+    <div class="klabel">Applications</div>
+    <h2 style="margin-top:20px">Two markets. Same eye.</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:42px">
+      <div style="border:1px solid var(--line2);background:var(--bg2)">
+        <div style="border-bottom:1px solid var(--line2);padding:20px 26px;display:flex;justify-content:space-between;align-items:center">
+          <span class="mono" style="font-size:12px;letter-spacing:.3em;color:var(--grn)">COMMERCIAL</span>
+          <span class="mono" style="font-size:10px;color:var(--dim)">DUAL-USE / CIVIL</span>
+        </div>
+        <div style="padding:22px 26px">
+          <ul class="feat">
+            <li><b>Follow-me cinematography</b> — locked, smooth subject tracking with no pilot skill.</li>
+            <li><b>GPS-poor inspection</b> — under bridges, inside plants, beside steel structures where GPS multipaths.</li>
+            <li><b>Search &amp; rescue</b> — canyons, forests, indoors; tracks a moving person.</li>
+            <li><b>Warehouse autonomy</b> — indoor flight with zero satellite coverage by design.</li>
+            <li><b>Urban delivery</b> — canyon-tolerant navigation between towers.</li>
+          </ul>
+        </div>
+      </div>
+      <div style="border:1px solid #4a1d24;background:#120a0d">
+        <div style="border-bottom:1px solid #4a1d24;padding:20px 26px;display:flex;justify-content:space-between;align-items:center">
+          <span class="mono" style="font-size:12px;letter-spacing:.3em;color:var(--red)">DEFENSE</span>
+          <span class="mono" style="font-size:10px;color:var(--dim)">CONTESTED EW ENVIRONMENT</span>
+        </div>
+        <div style="padding:22px 26px">
+          <ul class="feat">
+            <li><b>Counter-UAS interception</b> — vision-locked pursuit of Shahed-class and quadcopter threats.</li>
+            <li><b>ISR under jamming</b> — surveillance continues when every satellite channel is denied.</li>
+            <li><b>Convoy &amp; perimeter overwatch</b> — autonomous escort with click-to-task.</li>
+            <li><b>Terminal guidance</b> — proportional-navigation strike profile, vision-only end-game.</li>
+            <li><b>Comms-denied missions</b> — decides onboard; no link, no leash.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footrule"></div><div class="footbrand">THIRD IRIS · VISION-ONLY AUTONOMY</div>
+  <div class="pageno">09 / 11</div>
+</div>
+
+<!-- ============ 10 / INTELLIGENCE LAYER ============ -->
+<div class="page">
+  <div class="pad">
+    <div class="klabel c">Intelligence layer &middot; final phase</div>
+    <h2 style="margin-top:18px;font-size:46px">A System-2 mind. On the aircraft.</h2>
+    <p class="lead" style="margin-top:14px;max-width:880px;font-size:16px">A small on-board language model supervises the mission &mdash; it <span style="color:var(--ink)">advises</span>, it never flies. The 10&nbsp;Hz pilot, tracker and VIO stay untouched.</p>
+    <div style="display:grid;grid-template-columns:1fr 360px;gap:40px;margin-top:30px">
+      <div>
+        <div style="border:1px solid var(--cyan);background:#08161c;padding:16px 20px">
+          <div class="mono" style="font-size:10px;letter-spacing:.25em;color:var(--cyan)">SLOW SUPERVISOR &middot; ~0.5 HZ &middot; ADVISORY</div>
+          <div style="font-size:17px;font-weight:500;margin-top:8px">Qwen2.5-1.5B &middot; 4-bit &middot; Jetson Orin</div>
+          <div style="font-size:13.5px;color:var(--mut);margin-top:7px;line-height:1.55;font-weight:300">Reads telemetry text (track status, VIO health, GPS-jam flag, battery, geofence) &rarr; emits an enum mode + JSON. ~1.5&nbsp;s / turn.</div>
+          <div class="mono" style="font-size:12px;color:var(--cyan);margin-top:10px">{ mode: SEARCH | TRACK | STRIKE | RETURN | HOLD }</div>
+        </div>
+        <div style="text-align:center;color:var(--dim);font-size:18px;margin:6px 0">&#9660;</div>
+        <div style="border:1px solid var(--amb);background:#16110a;padding:16px 20px">
+          <div class="mono" style="font-size:10px;letter-spacing:.25em;color:var(--amb)">DETERMINISTIC SAFETY GATE &middot; FSM</div>
+          <div style="font-size:13.5px;color:var(--mut);margin-top:7px;line-height:1.55;font-weight:300">Validates the proposal, allows only legal mode transitions, clamps to the safety envelope (geofence / altitude / battery-RTL / speed). Stale or invalid &rarr; safe default. <span style="color:var(--amb)">The agent cannot command actuators.</span></div>
+        </div>
+        <div style="text-align:center;color:var(--dim);font-size:18px;margin:6px 0">&#9660;</div>
+        <div style="border:1px solid var(--grn);background:#0a1610;padding:16px 20px">
+          <div class="mono" style="font-size:10px;letter-spacing:.25em;color:var(--grn)">FAST STACK &middot; 10 HZ &middot; UNCHANGED</div>
+          <div style="font-size:13.5px;color:var(--mut);margin-top:7px;line-height:1.55;font-weight:300">YOLO + ByteTrack &rarr; BC+RL pilot &rarr; PX4 / MPC. VIO &rarr; state estimate. The pilot IS System-1 &mdash; instant, sub-millisecond.</div>
+        </div>
+      </div>
+      <div>
+        <div class="mono" style="font-size:10px;letter-spacing:.22em;color:var(--dim)">WHY NOT A VLA</div>
+        <ul class="feat" style="margin-top:12px">
+          <li style="font-size:14px;margin-bottom:11px">7B VLAs (OpenVLA, &pi;0) <b>replace</b> the pilot and don't run real-time on Orin.</li>
+          <li style="font-size:14px;margin-bottom:11px">We keep our fast policy and add only the <b>System-2</b> idea on top.</li>
+          <li style="font-size:14px;margin-bottom:11px">Text-over-telemetry, not raw pixels &mdash; far less hallucination.</li>
+        </ul>
+        <div class="mono" style="font-size:10px;letter-spacing:.22em;color:var(--dim);margin-top:18px">GROUNDED IN</div>
+        <div style="font-size:13px;color:var(--mut);margin-top:8px;line-height:1.8;font-weight:300">
+          Hi&nbsp;Robot &mdash; Physical Intelligence, 2025<br>LLM-Land &mdash; on-device LLM + MPC, 2025<br>NVIDIA GR00T &mdash; System-2 / System-1 split
+        </div>
+        <div style="border-top:1px solid var(--line);margin-top:18px;padding-top:14px">
+          <span class="chip" style="color:var(--amb);border-color:#4a3a12">Final phase &middot; builds in sim last</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="pageno">10 / 11</div>
+</div>
+
+<!-- ============ 11 / ROADMAP ============ -->
+<div class="page">
+  <div class="pad">
+    <div class="klabel c">Status &amp; roadmap</div>
+    <h2 style="margin-top:20px">Same software, sim to sky.</h2>
+    <div style="display:flex;margin-top:50px;gap:0">
+      <div style="flex:1;border-top:2px solid var(--grn);padding:22px 24px 0 0">
+        <div class="mono" style="font-size:10.5px;letter-spacing:.25em;color:var(--grn)">DONE · SIMULATION</div>
+        <div style="font-size:18px;font-weight:500;margin-top:12px">Full stack proven in AirSim</div>
+        <div style="font-size:14px;color:var(--mut);margin-top:10px;line-height:1.6;font-weight:300">Detect · track · follow · avoid · GPS-jam handover · strike profile — all measured across maneuver suites.</div>
+      </div>
+      <div style="flex:1;border-top:2px solid var(--grn);padding:22px 24px 0 0">
+        <div class="mono" style="font-size:10.5px;letter-spacing:.25em;color:var(--grn)">DONE · REAL DATA</div>
+        <div style="font-size:18px;font-weight:500;margin-top:12px">Detector + learned pilot trained</div>
+        <div style="font-size:14px;color:var(--mut);margin-top:10px;line-height:1.6;font-weight:300">50k real Shahed/quad images; RL pilot beats the hand-built expert 2.5× on centering.</div>
+      </div>
+      <div style="flex:1;border-top:2px solid var(--amb);padding:22px 24px 0 0">
+        <div class="mono" style="font-size:10.5px;letter-spacing:.25em;color:var(--amb)">NEXT · PRODUCTION VIO</div>
+        <div style="font-size:18px;font-weight:500;margin-top:12px">OpenVINS → flight controller</div>
+        <div style="font-size:14px;color:var(--mut);margin-top:10px;line-height:1.6;font-weight:300">Production-grade odometry fused into PX4; sub-meter drift target on benchmark flights.</div>
+      </div>
+      <div style="flex:1;border-top:2px solid var(--line2);padding:22px 0 0 0">
+        <div class="mono" style="font-size:10.5px;letter-spacing:.25em;color:var(--mut)">THEN · HARDWARE</div>
+        <div style="font-size:18px;font-weight:500;margin-top:12px">RealSense + Jetson Orin</div>
+        <div style="font-size:14px;color:var(--mut);margin-top:10px;line-height:1.6;font-weight:300">Identical code, real sensor. Depth camera + edge GPU + gimbal on a flight-test airframe.</div>
+      </div>
+    </div>
+    <div style="position:absolute;left:0;right:0;bottom:0;border:1px solid var(--acc);background:#170d07;padding:30px 36px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:26px;font-weight:700;letter-spacing:-.01em">If it can see, it can fight.</div>
+        <div style="font-size:14px;color:var(--mut);margin-top:6px;font-weight:300">Vision-only autonomy — jam-proof by physics, not by promise.</div>
+      </div>
+      <div class="mono" style="font-size:11px;letter-spacing:.3em;color:var(--acc);text-align:right">THIRD IRIS<br><span style="color:var(--dim)">AUTONOMY · 2026</span></div>
+    </div>
+  </div>
+  <div class="pageno">11 / 11</div>
+</div>
+
+</body>
+</html>
