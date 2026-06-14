@@ -38,7 +38,10 @@ def main():
         a = np.frombuffer(m.data, np.uint8).reshape(m.height, m.width, 3)
         S["gray"] = cv2.cvtColor(a, cv2.COLOR_RGB2GRAY)
     def on_depth(m):
-        S["depth"] = np.frombuffer(m.data, np.float32).reshape(m.height, m.width)
+        d = np.frombuffer(m.data, np.float32).reshape(m.height, m.width).copy()
+        d[~np.isfinite(d)] = 0.0                      # gz depth = inf/NaN for no-return -> 0 (VIO skips)
+        d[(d < 0.1) | (d > 80.0)] = 0.0
+        S["depth"] = d
     def on_imu(m):
         a = m.linear_acceleration; g = m.angular_velocity
         S["imu"] = (flu2frd([a.x, a.y, a.z]), flu2frd([g.x, g.y, g.z]))
@@ -53,24 +56,30 @@ def main():
     node.subscribe(IMU, f"/world/{args.world}/model/{args.model}/link/base_link/sensor/imu_sensor/imu", on_imu)
     node.subscribe(Pose_V, f"/world/{args.world}/pose/info", on_pose)
 
-    # ---- flight: arm, offboard, takeoff, fly a square (so the camera sees translation) ----
+    # ---- flight: PX4 OFFBOARD needs a CONTINUOUS setpoint stream before + during the mode switch ----
+    SPT = {"n": 0.0, "e": 0.0, "d": -5.0}
     def fly():
         m = mavutil.mavlink_connection("udpin:0.0.0.0:14540")
-        m.wait_heartbeat(); print("[fly] heartbeat", flush=True)
-        def sp(n, e, d):
+        m.wait_heartbeat(); print(f"[fly] heartbeat sys {m.target_system}", flush=True)
+        ts, tc = m.target_system, m.target_component
+        def send():
             m.mav.set_position_target_local_ned_send(
-                0, m.target_system, m.target_component, mavutil.mavlink.MAV_FRAME_LOCAL_NED,
-                0b0000111111111000, n, e, d, 0,0,0, 0,0,0, 0,0)
-        for _ in range(20): sp(0,0,-5); time.sleep(0.05)
-        m.mav.command_long_send(m.target_system, m.target_component,
-            mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0, 1, 6, 0,0,0,0,0)   # OFFBOARD
-        m.arducopter_arm() if hasattr(m,"arducopter_arm") else None
-        m.mav.command_long_send(m.target_system, m.target_component,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1,0,0,0,0,0,0)
-        print("[fly] armed + offboard, climbing", flush=True)
-        sq = [(0,0,-5)]*60 + [(8,0,-5)]*60 + [(8,8,-6)]*60 + [(0,8,-6)]*60 + [(0,0,-5)]*60
-        for (n,e,d) in sq:
-            sp(n,e,d); time.sleep(0.1)
+                0, ts, tc, mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                0b0000111111111000, SPT["n"], SPT["e"], SPT["d"], 0,0,0, 0,0,0, 0,0)
+        # stream setpoints continuously at 20 Hz FOREVER (required for offboard to engage + hold)
+        def streamer():
+            while True:
+                send(); time.sleep(0.05)
+        threading.Thread(target=streamer, daemon=True).start()
+        time.sleep(1.5)                                  # let setpoints flow before switching
+        m.mav.command_long_send(ts, tc, mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0, 1, 6, 0,0,0,0,0)  # OFFBOARD
+        time.sleep(0.5)
+        m.mav.command_long_send(ts, tc, mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1,0,0,0,0,0,0)
+        print("[fly] arm+offboard sent; climbing to 5 m", flush=True)
+        time.sleep(10)                                   # climb
+        # fly a square (set the shared setpoint; the streamer keeps sending it)
+        for (n,e,d) in [(8,0,-5),(8,8,-6),(0,8,-6),(0,0,-5)]:
+            SPT["n"],SPT["e"],SPT["d"]=n,e,d; print(f"[fly] -> {n},{e},{d}",flush=True); time.sleep(8)
         print("[fly] path done", flush=True)
     threading.Thread(target=fly, daemon=True).start()
 
