@@ -39,8 +39,16 @@ WORLD = f"""<?xml version="1.0" ?>
       <visual name="v"><geometry><plane><normal>0 0 1</normal><size>500 500</size></plane></geometry>
         <material><diffuse>0.45 0.42 0.35 1</diffuse></material></visual></link></model>
     {pillars}
-    <include><uri>model://jetray</uri><name>chaser</name><pose>0 0 4 0 0 0</pose></include>
-    <include><uri>model://jetray_target</uri><name>target</name><pose>0 0 18 0 0 0</pose></include>
+    <!-- SPECTATOR camera: 3rd-person view of the arena + drones, streamed to the browser (/spectator) -->
+    <model name="spectator"><static>true</static><pose>34 0 16 0 -0.18 3.14159</pose>
+      <link name="l"><sensor name="spec" type="camera"><topic>spectator</topic>
+        <camera><horizontal_fov>1.5</horizontal_fov><image><width>1280</width><height>720</height></image>
+          <clip><near>0.1</near><far>800</far></clip></camera>
+        <always_on>1</always_on><update_rate>20</update_rate></sensor></link></model>
+    <!-- camera-less visual drones (jetray has an onboard camera that competes with the spectator sensor
+         on software GL); the spectator is the only render camera here -->
+    <include><uri>model://jetray_target_blue</uri><name>chaser</name><pose>0 0 4 0 0 0</pose></include>
+    <include><uri>model://jetray_target_red</uri><name>target</name><pose>0 0 18 0 0 0</pose></include>
   </world>
 </sdf>
 """
