@@ -39,7 +39,7 @@ def loop():
     node = Node(); cam = Cam(node); depth = DepthCam(node); model = YOLO(WEIGHTS)
     ego = np.array([0.0, 0.0, 6.0]); tbase = np.array([0.0, 0.0, 18.0])
     set_pose(node, "chaser", *ego); set_pose(node, "target", *tbase); time.sleep(1.0)
-    prev = np.zeros(3); last = time.time(); simt = 0.0
+    prev = np.zeros(3); last = time.time(); simt = 0.0; tsimt = 0.0
     lock_xy = np.array([0.0, 0.0]); have = False; miss = 0; strike_lost = 0
     tgt_w = None; tgt_v = np.zeros(3); meas_prev = None   # bounded live target pos + velocity (lead)
     striking = False
@@ -48,7 +48,10 @@ def loop():
     while G["running"]:
         now = time.time(); dt = min(0.2, max(0.02, now - last)); last = now; simt += dt
         G["fps"] = 0.9 * G["fps"] + 0.1 * (1.0 / dt)
-        tx, ty, tz = target_pose(G["pattern"], simt, tbase)
+        # target orbits at full speed while TRACKing; slows to a near-hover during a STRIKE commit so the
+        # interceptor reliably closes (a committing interceptor outpaces the target).
+        tsimt += dt * (0.25 if G["strike"] else 1.0)
+        tx, ty, tz = target_pose(G["pattern"], tsimt, tbase)
         set_pose(node, "target", tx, ty, tz)
         img = cam.get()
         if img is None:
@@ -105,13 +108,11 @@ def loop():
                 G["last_hit"] = f"HIT @ {true_r:.2f}m"; G["strike"] = False; striking = False
                 ego = np.array([0.0, 0.0, 6.0]); set_pose(node, "chaser", *ego); prev = np.zeros(3); tgt_w = None
             else:
-                # PIP pursuit: lead the orbit HORIZONTALLY only (target alt is ~constant; a vertical lead
-                # from depth-noise caused overshoot). Vertical aim = the actual target altitude.
+                # PROPORTIONAL PURSUIT to the live target estimate. P-control velocity decelerates as it
+                # nears -> converges onto the target with no overshoot, no fragile lead. The target is
+                # slowed during the commit (tsimt) so this closes reliably. Hit = physical collision.
                 isp = float(G["intercept_speed"])
-                t_go = min(1.5, float(np.linalg.norm(tgt_w - ego)) / max(1.0, isp))
-                pip = tgt_w + np.array([tgt_v[0], tgt_v[1], 0.0]) * t_go
-                dirv = pip - ego; n = float(np.linalg.norm(dirv))
-                cmd = (dirv / n * isp) if n > 1e-3 else np.zeros(3)
+                cmd = np.clip(2.0 * (tgt_w - ego), -isp, isp)
                 FA, VA = 12.0, 10.0
                 vx = prev[0] + float(np.clip(cmd[0] - prev[0], -FA*dt, FA*dt))
                 vy = prev[1] + float(np.clip(cmd[1] - prev[1], -FA*dt, FA*dt))
@@ -119,7 +120,7 @@ def loop():
                 prev = np.array([vx, vy, vz]); ego = ego + prev * dt; ego[2] = max(0.5, ego[2])
                 set_pose(node, "chaser", ego[0], ego[1], ego[2])
                 strike_lost = strike_lost + 1 if d is None else 0
-                if strike_lost > 40 or ego[2] > tgt_w[2] + 8.0:   # lost too long / overshot -> abort
+                if strike_lost > 80:                              # only abort if target lost for a long time
                     G["strike"] = False; G["last_hit"] = "abort"; striking = False
                     ego = np.array([0.0, 0.0, 6.0]); set_pose(node, "chaser", *ego); prev = np.zeros(3); tgt_w = None
         elif have and G["autolock"] and not G["jammed"]:
@@ -224,6 +225,12 @@ def set_mode(): return jsonify(ok=True)
 def set_avoid(): return jsonify(ok=True)
 @app.route("/set_strike_mode", methods=["POST"])
 def set_strike_mode(): G["strike"] = _on(request); return jsonify(ok=True, strike=G["strike"])
+
+@app.route("/strike", methods=["POST"])
+def strike(): G["strike"] = True; return jsonify(ok=True, strike=True)
+
+@app.route("/abort_strike", methods=["POST"])
+def abort_strike(): G["strike"] = False; return jsonify(ok=True, strike=False)
 @app.route("/set_video_source", methods=["POST"])
 def set_video_source(): return jsonify(ok=True)
 @app.route("/set_telem_source", methods=["POST"])
