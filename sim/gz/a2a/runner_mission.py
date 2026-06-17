@@ -58,6 +58,7 @@ def main():
     ap.add_argument("--alt", type=float, default=8.0)
     ap.add_argument("--dwell", type=float, default=5.0, help="seconds per waypoint")
     ap.add_argument("--cruise", type=float, default=4.0, help="MPC_XY_CRUISE (slow so the chaser can catch)")
+    ap.add_argument("--yshift", type=float, default=0.0, help="offset whole route in N (world Y) — for a 2nd runner")
     ap.add_argument("--loops", type=int, default=1)
     args = ap.parse_args()
 
@@ -88,7 +89,7 @@ def main():
     print("[runner] climbing", flush=True)
     time.sleep(8.0)                                       # climb to alt
 
-    route = default_route(args.alt)
+    route = [(n + args.yshift, e, d) for (n, e, d) in default_route(args.alt)]
     for lap in range(args.loops):
         for (n, e, d) in route:
             SPT["n"], SPT["e"], SPT["d"] = n, e, d

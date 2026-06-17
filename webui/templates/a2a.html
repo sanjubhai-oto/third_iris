@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>JetRay — 3-drone air-to-air (PX4 SITL)</title>
+  <style>
+    body { margin:0; background:#0b0f17; color:#cdd6e4; font-family:Segoe UI, sans-serif; }
+    h2 { color:#0ff; margin:10px 14px; font-weight:600; }
+    .wrap { display:flex; flex-wrap:wrap; gap:14px; padding:0 14px 14px; }
+    .panel { background:#121826; border:1px solid #1e2738; border-radius:10px; padding:10px; }
+    .panel h3 { margin:0 0 8px; font-size:13px; color:#7f8c9b; font-weight:600; letter-spacing:.04em; }
+    #feed { display:block; width:560px; max-width:46vw; border-radius:6px; background:#000; }
+    #map3d { background:#0d1321; border-radius:6px; cursor:grab; display:block; }
+    .legend { display:flex; gap:16px; margin-top:8px; font-size:13px; flex-wrap:wrap; }
+    .legend span { display:inline-flex; align-items:center; gap:6px; }
+    .dot { width:11px; height:11px; border-radius:50%; display:inline-block; }
+    .val { color:#9fb0c3; font-variant-numeric:tabular-nums; }
+    #status { color:#6b7686; margin:2px 14px 8px; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h2>JetRay — 3-drone air-to-air · PX4 SITL · live feed + 3-D trajectories</h2>
+  <div id="status">connecting…</div>
+  <div class="wrap">
+    <div class="panel">
+      <h3>CHASER POV (onboard forward camera)</h3>
+      <img id="feed" src="/video_feed">
+    </div>
+    <div class="panel">
+      <h3>3-D TRAJECTORY MAP (drag to rotate)</h3>
+      <canvas id="map3d" width="560" height="420"></canvas>
+      <div class="legend" id="legend"></div>
+    </div>
+  </div>
+
+<script>
+var cv = document.getElementById("map3d"), ctx = cv.getContext("2d");
+var paths = {}, meta = {}, az = -0.6, dragging = false, lastX = 0, MAXPTS = 600;
+var statusEl = document.getElementById("status"), legendEl = document.getElementById("legend");
+
+function near(a,b){ return Math.abs(a-b) < 0.05; }
+function push(name, x, y, z){
+  if(!paths[name]) paths[name] = [];
+  var arr = paths[name], p = arr[arr.length-1];
+  if(p && near(p.x,x) && near(p.y,y) && near(p.z,z)) return;
+  arr.push({x:x,y:y,z:z}); if(arr.length > MAXPTS) arr.shift();
+}
+function bounds(){
+  var lo={x:1e9,y:1e9,z:1e9}, hi={x:-1e9,y:-1e9,z:-1e9}, any=false;
+  for(var k in paths) paths[k].forEach(function(p){ any=true;
+    lo.x=Math.min(lo.x,p.x); hi.x=Math.max(hi.x,p.x);
+    lo.y=Math.min(lo.y,p.y); hi.y=Math.max(hi.y,p.y);
+    lo.z=Math.min(lo.z,p.z); hi.z=Math.max(hi.z,p.z); });
+  return any ? {lo:lo,hi:hi} : null;
+}
+function render(){
+  var W=cv.width, H=cv.height; ctx.fillStyle="#0d1321"; ctx.fillRect(0,0,W,H);
+  var b=bounds();
+  if(!b){ ctx.fillStyle="#5c6470"; ctx.font="14px Segoe UI"; ctx.fillText("waiting for drone poses…",20,30); return; }
+  var cx=(b.lo.x+b.hi.x)/2, cy=(b.lo.y+b.hi.y)/2;
+  var span=Math.max(10, b.hi.x-b.lo.x, b.hi.y-b.lo.y, b.hi.z-b.lo.z);
+  var s=(Math.min(W,H)*0.60)/span, ox=W/2, oy=H*0.74;
+  var ca=Math.cos(az), sa=Math.sin(az), TILT=0.5;
+  function proj(p){
+    var x=p.x-cx, y=p.y-cy, u=p.z-b.lo.z;
+    var gx=x*ca - y*sa, gy=x*sa + y*ca;
+    return { x:ox+gx*s, y:oy+gy*s*TILT - u*s, gy:oy+gy*s*TILT };
+  }
+  ctx.strokeStyle="#1c2738"; ctx.lineWidth=1;
+  for(var g=-2; g<=2; g++){
+    var a1=proj({x:cx+g*span/4,y:cy-span/2,z:b.lo.z}), a2=proj({x:cx+g*span/4,y:cy+span/2,z:b.lo.z});
+    ctx.beginPath(); ctx.moveTo(a1.x,a1.gy); ctx.lineTo(a2.x,a2.gy); ctx.stroke();
+    var b1=proj({x:cx-span/2,y:cy+g*span/4,z:b.lo.z}), b2=proj({x:cx+span/2,y:cy+g*span/4,z:b.lo.z});
+    ctx.beginPath(); ctx.moveTo(b1.x,b1.gy); ctx.lineTo(b2.x,b2.gy); ctx.stroke();
+  }
+  for(var k in paths){
+    var arr=paths[k], col=(meta[k]&&meta[k].color)||"#888"; if(arr.length<1) continue;
+    ctx.strokeStyle=col; ctx.lineWidth=2; ctx.beginPath();
+    arr.forEach(function(p,i){ var q=proj(p); if(i===0)ctx.moveTo(q.x,q.y); else ctx.lineTo(q.x,q.y); });
+    ctx.stroke();
+    var last=arr[arr.length-1], q=proj(last);
+    ctx.strokeStyle="#33415566"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(q.x,q.y); ctx.lineTo(q.x,q.gy); ctx.stroke();
+    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(q.x,q.y,6,0,6.283); ctx.fill();
+    ctx.fillStyle="#cdd6e4"; ctx.font="11px Segoe UI";
+    ctx.fillText((meta[k]&&meta[k].role)||k, q.x+9, q.y+3);
+  }
+  ctx.fillStyle="#7f8c9b"; ctx.font="11px Segoe UI"; ctx.fillText("span ~"+Math.round(span)+" m  ·  Z=altitude", 10, 16);
+}
+cv.addEventListener("mousedown", function(e){ dragging=true; lastX=e.clientX; cv.style.cursor="grabbing"; });
+window.addEventListener("mouseup", function(){ dragging=false; cv.style.cursor="grab"; });
+window.addEventListener("mousemove", function(e){ if(dragging){ az+=(e.clientX-lastX)*0.01; lastX=e.clientX; render(); } });
+
+function legend(){
+  var h=""; for(var k in meta){ var m=meta[k]; var p=paths[k]&&paths[k][paths[k].length-1];
+    var pos=p?(" <span class='val'>("+p.x.toFixed(1)+", "+p.y.toFixed(1)+", "+p.z.toFixed(1)+")</span>"):"";
+    h+="<span><span class='dot' style='background:"+m.color+"'></span>"+m.role+pos+"</span>"; }
+  legendEl.innerHTML=h;
+}
+function poll(){
+  fetch("/telemetry",{cache:"no-store"}).then(function(r){return r.json();}).then(function(d){
+    var drones=(d&&d.drones)||[];
+    if(!drones.length){ statusEl.textContent="waiting for engagement… (run launch_a2a + telem_writer)"; }
+    else { statusEl.textContent="live · "+drones.length+" drones · frame "+d.t; }
+    drones.forEach(function(dr){ meta[dr.name]={role:dr.role,color:dr.color}; push(dr.name,dr.x,dr.y,dr.z); });
+    legend(); render();
+  }).catch(function(){ statusEl.textContent="offline — is app_a2a running?"; });
+}
+setInterval(poll, 200); poll();
+</script>
+</body>
+</html>

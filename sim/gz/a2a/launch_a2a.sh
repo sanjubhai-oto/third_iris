@@ -56,14 +56,19 @@ echo "[a2a] starting CHASER (i=0, jetray_chaser) ..."
 start_px4 0 jetray_chaser "0,0,0.2,0,0,0" chaser
 wait_vehicle jetray_chaser_0 14540 CHASER || { tail -15 /tmp/a2a_chaser.log; exit 1; }
 
-# ---- 3) RUNNER (instance 1) 12 m ahead along +X (in the chaser's forward FOV) ----
-echo "[a2a] starting RUNNER (i=1, jetray_runner) ..."
+# ---- 3) RUNNER 1 (instance 1) 12 m ahead along +X (in the chaser's forward FOV) ----
+echo "[a2a] starting RUNNER1 (i=1, jetray_runner) ..."
 start_px4 1 jetray_runner "12,0,0.2,0,0,0" runner
-wait_vehicle jetray_runner_1 14541 RUNNER || { tail -15 /tmp/a2a_runner.log; exit 1; }
+wait_vehicle jetray_runner_1 14541 RUNNER1 || { tail -15 /tmp/a2a_runner.log; exit 1; }
+
+# ---- 4) RUNNER 2 (instance 2) 12 m ahead, offset +Y -> second target for the 3-drone view ----
+echo "[a2a] starting RUNNER2 (i=2, jetray_runner) ..."
+start_px4 2 jetray_runner "12,8,0.2,0,0,0" runner2
+wait_vehicle jetray_runner_2 14542 RUNNER2 || { tail -15 /tmp/a2a_runner2.log; exit 1; }
 
 echo "[a2a] ===== UP ====="
 echo "  models in /world/$A2A_WORLD/pose/info:"
 gz topic -e -t "/world/$A2A_WORLD/pose/info" -n 1 2>/dev/null | grep -oE 'name: "jetray_[a-z]+_[0-9]"' | sort -u
 echo "  camera topic:"; gz topic -l 2>/dev/null | grep -E "camera_front|cam_vio" || echo "   (none yet)"
-echo "  CHASER offboard udp:14540   RUNNER offboard udp:14541"
+echo "  CHASER udp:14540   RUNNER1 udp:14541   RUNNER2 udp:14542"
 echo "[a2a] logs: /tmp/a2a_gz.log /tmp/a2a_chaser.log /tmp/a2a_runner.log"
