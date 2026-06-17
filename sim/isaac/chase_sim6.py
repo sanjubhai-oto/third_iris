@@ -256,6 +256,15 @@ def engage(save=True):
                 save_atomic(simg, os.path.join(OUT, "latest_spec.jpg"))
                 imageio.imwrite(os.path.join(SF, f"s{i:04d}.png"), simg)
 
+        if save:                                    # live telemetry for the webui 3D map
+            telem = {"ego": [float(C[0]), float(C[1]), float(C[2])],
+                     "tgt": [float(T[0]), float(T[1]), float(T[2])],
+                     "range": round(rng, 2), "tgo": round(tgo, 2), "step": i,
+                     "locked": bool(det is not None), "hit": bool(rng < HIT_R)}
+            tj = os.path.join(OUT, "latest_telem.json")
+            with open(tj + ".tmp", "w") as f: json.dump(telem, f)
+            os.replace(tj + ".tmp", tj)
+
         rows.append((i, round(t, 2), *[round(float(x), 2) for x in C], round(yaw, 1), round(pitch, 1),
                      round(rng, 2), 1 if det is not None else 0))
         if i % 20 == 0:
@@ -278,7 +287,11 @@ if GUI:
         print("viewport set skip (default cam):", repr(e), flush=True)
     print("LIVE_GUI up — watch the Isaac Sim window (strike loops).", flush=True)
     while app.is_running():
-        engage(save=False)
+        engage(save=True)                            # also write frames + telem for the webui
+elif os.environ.get("ISAAC_LOOP") == "1":
+    print("ISAAC_LOOP: headless live feed for the webui (strike repeats).", flush=True)
+    while True:
+        engage(save=True)
 else:
     rows = engage(save=True)
     with open(os.path.join(OUT, "chase_log.csv"), "w", newline="") as f:
