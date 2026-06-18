@@ -37,6 +37,13 @@ class MavBridge:
         self.m = mavutil.mavlink_connection(conn)
         print(f"[mav] waiting for heartbeat on {conn} ...")
         self.m.wait_heartbeat()
+        # PX4 autopilot heartbeats carry sysid>=1; a sysid-0 heartbeat (router/GCS/garbled) latches
+        # target_system=0 and arm/mode commands then go nowhere. Re-acquire until we see a real one.
+        t0 = time.time()
+        while self.m.target_system == 0 and time.time() - t0 < 15:
+            hb = self.m.recv_match(type="HEARTBEAT", blocking=True, timeout=3)
+            if hb is not None and hb.get_srcSystem() != 0:
+                self.m.target_system = hb.get_srcSystem(); self.m.target_component = hb.get_srcComponent()
         print(f"[mav] heartbeat from sys {self.m.target_system} comp {self.m.target_component}")
 
     # ---- body-frame velocity + yaw-rate setpoint (the tracker -> FC mapping) ----
@@ -69,6 +76,15 @@ class MavBridge:
             self.mavutil.mavlink.MAV_FRAME_BODY_NED, type_mask,
             0, 0, 0, float(vx), float(vy), float(vz), 0, 0, 0,
             0.0, math.radians(float(yaw_rate_deg)))
+
+    def send_position_ned(self, n: float, e: float, d: float, yaw_deg: float = 0.0):
+        """Local-NED POSITION setpoint (proven robust takeoff/hold path; same as runner_mission).
+        d negative = up. Use for takeoff (0,0,-alt) before switching to velocity tracking."""
+        self.m.mav.set_position_target_local_ned_send(
+            0, self.m.target_system, self.m.target_component,
+            self.mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+            0b0000100011111000,                       # use position + YAW, ignore vel/acc/yawrate
+            float(n), float(e), float(d), 0, 0, 0, 0, 0, 0, math.radians(float(yaw_deg)), 0)
 
     def hover(self):
         self.send_body_velocity(0.0, 0.0, 0.0)

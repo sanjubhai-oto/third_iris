@@ -95,25 +95,49 @@ def depth_color(d):
 
 
 def loop():
+    from pymavlink import mavutil
     air_model = YOLO(UAV_W); coco = YOLO(COCO_W)
     br = MavBridge("udpin:0.0.0.0:14540")
-    cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw": 0.0}
-    def streamer():
-        while True:
-            br.send_body_velocity_xy(cmd["vx"], cmd["vy"], cmd["vz"], cmd["yaw"]); time.sleep(0.05)
-    threading.Thread(target=streamer, daemon=True).start()
-    time.sleep(1.0); arm_offboard(br.m, timeout=60.0, label="chaser")
-    cmd["vz"] = -2.0; t0 = time.time()
-    while time.time() - t0 < 7 and (S["ego"] is None or S["ego"][2] < 7.5): time.sleep(0.1)
-    cmd["vz"] = 0.0
+    cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw": 0.0, "mode": "takeoff", "alt": 8.0}
 
-    lock = None      # {"kind":"air"|"ground", "box":..,"cx","cy"} in its source image
-    fno = 0; last = time.time()
+    HOLD = (0.0, 10.0, -9.0)                       # local NED hold point ~ world (10,0,9): engagement area
+    def streamer():                               # the ONLY continuous br.m writer (proven to allow offboard)
+        while True:
+            if cmd["mode"] == "takeoff":          # POSITION setpoint takeoff (robust, like runner_mission)
+                br.send_position_ned(0.0, 0.0, -cmd["alt"], 90.0)      # yaw 90 (NED) = face world +X corridor
+            elif cmd["mode"] == "hold":           # POSITION hold -> contained + re-acquires (no dead-reckon)
+                br.send_position_ned(HOLD[0], HOLD[1], HOLD[2], 90.0)
+            else:
+                br.send_body_velocity_xy(cmd["vx"], cmd["vy"], cmd["vz"], cmd["yaw"])
+            time.sleep(0.05)
+    threading.Thread(target=streamer, daemon=True).start()
+
+    def arm_and_climb(timeout=60.0):
+        cmd["mode"] = "takeoff"                    # stream position setpoint (0,0,-alt) -> climbs to alt
+        arm_offboard(br.m, timeout=timeout, label="chaser")
+        t0 = time.time()
+        while time.time() - t0 < 14 and (S["ego"] is None or S["ego"][2] < cmd["alt"] - 0.6):
+            time.sleep(0.1)
+        print(f"[chaser] at alt {S['ego'][2]:.1f}m -> velocity tracking" if S["ego"] is not None else "climb done", flush=True)
+        cmd["vx"] = cmd["vy"] = cmd["vz"] = cmd["yaw"] = 0.0; cmd["mode"] = "vel"
+
+    time.sleep(1.0)
+    arm_and_climb()
+
+    lock = None; lock_miss = 0      # {"kind":"air"|"ground", "box":..} in its source image
+    fno = 0; last = time.time(); last_armchk = time.time()
     air_dets = []; gnd_dets = []
     while G["running"]:
         if S["stamp"] == 0.0:
             time.sleep(0.02); continue
         fno += 1; now = time.time(); dt = max(0.02, now - last); last = now
+        # re-arm-on-land watchdog: if PX4 dropped to disarmed (failsafe/land) outside a deliberate
+        # LAND, bring it back up so the live demo keeps flying.
+        if now - last_armchk > 2.5:
+            last_armchk = now
+            br.m.recv_match(type="HEARTBEAT", blocking=False)
+            if not br.m.motors_armed() and G["state"] != "LAND":
+                print("[chaser] disarmed -> re-arming + climbing", flush=True); arm_and_climb(timeout=20.0)
         front, down, depth = S["front"], S["down"], S["depth"]
         ego, yaw, air, gnd = S["ego"], S["yaw"], S["air"], S["ground"]
 
@@ -152,15 +176,20 @@ def loop():
                 lb = lock["box"]; lc = ((lb[0]+lb[2])/2, (lb[1]+lb[3])/2)
                 d = min(pool, key=lambda d: ((d["box"][0]+d["box"][2])/2-lc[0])**2 +
                                             ((d["box"][1]+d["box"][3])/2-lc[1])**2)
-                lock["box"] = d["box"]
+                lock["box"] = d["box"]; lock_miss = 0
+            else:
+                lock_miss += 1
+                if lock_miss > 25:                 # lost the locked target -> drop it (no dead-reckon away)
+                    lock = None
 
         # ---- control ----
         G["locked"] = lock is not None
         if lock is None:
+            cmd["mode"] = "hold"                   # position-hold at the engagement area + re-acquire
             cmd["vx"] = cmd["vy"] = cmd["vz"] = 0.0; cmd["yaw"] = 0.0
             G["state"] = "SEARCH" if G["search"] else "DETECT"
         elif lock["kind"] == "air":
-            G["state"] = "TRACK-AIR"
+            cmd["mode"] = "vel"; G["state"] = "TRACK-AIR"
             b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
             ex = (cx - FW/2)/(FW/2); ey = (cy - FH/2)/(FH/2); center_err = float(math.hypot(ex, ey))
             if depth is not None:                       # range from forward depth at bbox center
@@ -173,6 +202,7 @@ def loop():
             close = (rng - G["gap"]) if rng else (sp*(1-abs(ex)))
             cmd["vx"] = float(np.clip(0.8*close if rng else sp*(1-abs(ex)), 0.0, sp)); cmd["vy"] = 0.0
         else:  # ground
+            cmd["mode"] = "vel"
             b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
             ex = (cx - DW/2)/(DW/2); ey = (cy - DH/2)/(DH/2); center_err = float(math.hypot(ex, ey))
             cmd["yaw"] = 0.0; sp = float(G["speed"])
@@ -195,6 +225,11 @@ def loop():
                 dx, dy = float(gnd[0]-ego[0]), float(gnd[1]-ego[1])
                 bx = dx*math.cos(yaw)+dy*math.sin(yaw); by = -dx*math.sin(yaw)+dy*math.cos(yaw)
                 cmd["vx"] = float(np.clip(0.7*bx, -sp, sp)); cmd["vy"] = float(np.clip(0.7*by, -sp, sp))
+
+        # ---- altitude governor: hold ~9 m so the chaser stays where it can see air+ground
+        #      (LAND/STRIKE override to descend). Robust to takeoff overshoot. ----
+        if ego is not None and G["state"] not in ("LAND", "STRIKE"):
+            cmd["vz"] = float(np.clip(-0.9 * (9.0 - ego[2]), -2.0, 2.0))
 
         # ---- annotate the active view ----
         src = G["video_src"]
