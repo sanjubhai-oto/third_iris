@@ -553,7 +553,7 @@
     return {
       update: function (t) {
         try {                                   // never let the map break telemetry / video
-          if (t.state === "TRACK") { push(chaser, t.ego_n, t.ego_e, t.ego_d); push(target, t.tgt_n, t.tgt_e, t.tgt_d); }
+          if (t.state && t.state.indexOf("TRACK") === 0) { push(chaser, t.ego_n, t.ego_e, t.ego_d); if (t.tgt_n || t.tgt_e || t.tgt_d) push(target, t.tgt_n, t.tgt_e, t.tgt_d); }
           render();
         } catch (e) { /* ignore map errors */ }
       },

@@ -28,6 +28,7 @@ from gz.msgs10.pose_v_pb2 import Pose_V
 from mavlink_control import MavBridge
 from px4_util import arm_offboard
 from range_filter import RangeFilter        # robust range: depth + bbox-size cross-check + gating
+from smooth_control import ImageKalman, rate_limit   # smooth/predict bbox -> steady tracking
 from ultralytics import YOLO
 
 UAV_W = os.environ.get("UAV_MODEL", os.path.join(REPO, "runs/train/uav_diverse/weights/best.pt"))
@@ -164,6 +165,8 @@ def loop():
     arm_and_climb()
 
     lock = None; lock_miss = 0; rf = None      # {"kind":"air"|"ground", "box":..} + robust range filter
+    ikf = ImageKalman(q=2.0, r=0.05)           # smooth + coast the bbox bearing -> steady servo
+    prevc = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw": 0.0}; lost_t = 0.0; prev_video = "front"
     fno = 0; last = time.time(); last_armchk = time.time()
     air_dets = []; gnd_dets = []
     while G["running"]:
@@ -180,7 +183,8 @@ def loop():
         front, down, depth = S["front"], S["down"], S["depth"]
         ego, yaw, air, gnd = S["ego"], S["yaw"], S["air"], S["ground"]
 
-        # ---- detect (throttled + alternating so the Flask UI thread isn't GIL-starved) ----
+        # ---- detect (throttled + alternating; *_fresh = a REAL detection ran this frame) ----
+        air_fresh = gnd_fresh = False
         if front is not None and fno % 4 == 0:
             air_dets = yolo_boxes(air_model, front, 0.12, 512)
             if depth is not None and air_dets:           # SHADOW rejection via forward depth
@@ -193,98 +197,109 @@ def loop():
                     else:
                         G["shadows"] = G.get("shadows", 0) + 1
                 air_dets = kept
+            air_fresh = len(air_dets) > 0
         if down is not None and fno % 4 == 2:
             gnd_dets = yolo_boxes(coco, down, 0.30, 416, classes=list(GROUND_CLS))
+            gnd_fresh = len(gnd_dets) > 0
 
+        # ---- TARGET SELECTOR: the VIDEO toggle picks the target type (front/depth = UAV, down = ground)
+        active_kind = "ground" if G["video_src"] == "down" else "air"
+        if G["video_src"] != prev_video:
+            prev_video = G["video_src"]
+            if lock is not None and lock["kind"] != active_kind:
+                lock = None; ikf.reset()             # switched target type -> drop + re-acquire the new kind
         # ---- selection (click / autolock / clear) ----
         if G["clear"]:
-            lock = None; G["clear"] = False; G["strike_armed"] = False
+            lock = None; ikf.reset(); G["clear"] = False; G["strike_armed"] = False
         sel = G.pop("sel", None) if "sel" in G else None
         if sel is not None:
-            sx, sy = sel
-            src = G["video_src"]
-            pool = gnd_dets if src == "down" else air_dets
-            kind = "ground" if src == "down" else "air"
-            iw, ih = (DW, DH) if src == "down" else (FW, FH)
+            pool = gnd_dets if active_kind == "ground" else air_dets
+            iw, ih = (DW, DH) if active_kind == "ground" else (FW, FH)
             if pool:
-                px, py = sx * iw, sy * ih
+                px, py = sel[0] * iw, sel[1] * ih
                 d = min(pool, key=lambda d: (np.mean([d["box"][0], d["box"][2]]) - px) ** 2 +
                                             (np.mean([d["box"][1], d["box"][3]]) - py) ** 2)
-                lock = {"kind": kind, "box": d["box"]}
+                lock = {"kind": active_kind, "box": d["box"]}; ikf.reset()
         elif G["autolock"] and lock is None:
-            if air_dets:
-                d = max(air_dets, key=lambda d: d["conf"]); lock = {"kind": "air", "box": d["box"]}
-            elif gnd_dets:
-                d = max(gnd_dets, key=lambda d: d["conf"]); lock = {"kind": "ground", "box": d["box"]}
-
-        # ---- refresh lock box from nearest current detection of same kind ----
-        rng = None; center_err = None
-        if lock is not None:
-            pool = air_dets if lock["kind"] == "air" else gnd_dets
+            pool = air_dets if active_kind == "air" else gnd_dets
             if pool:
+                d = max(pool, key=lambda d: d["conf"]); lock = {"kind": active_kind, "box": d["box"]}; ikf.reset()
+
+        # ---- refresh + SMOOTH: Kalman-update on a fresh detection, else COAST on the prediction ----
+        rng = None; center_err = None; sxy = None
+        if lock is not None:
+            fresh = air_fresh if lock["kind"] == "air" else gnd_fresh
+            pool = air_dets if lock["kind"] == "air" else gnd_dets
+            iw, ih = (FW, FH) if lock["kind"] == "air" else (DW, DH)
+            if fresh and pool:
                 lb = lock["box"]; lc = ((lb[0]+lb[2])/2, (lb[1]+lb[3])/2)
                 d = min(pool, key=lambda d: ((d["box"][0]+d["box"][2])/2-lc[0])**2 +
                                             ((d["box"][1]+d["box"][3])/2-lc[1])**2)
-                lock["box"] = d["box"]; lock_miss = 0
+                lock["box"] = d["box"]; b = d["box"]
+                exr = ((b[0]+b[2])/2 - iw/2)/(iw/2); eyr = ((b[1]+b[3])/2 - ih/2)/(ih/2)
+                sxy = ikf.update(exr, eyr, dt)
             else:
-                lock_miss += 1
-                if lock_miss > 25:                 # lost the locked target -> drop it (no dead-reckon away)
-                    lock = None
+                sxy = ikf.coast(dt)
+                if sxy is None or ikf.miss > 30:       # ~3 s coasting with no detection -> truly lost
+                    lock = None; ikf.reset()
 
-        # ---- control ----
+        # ---- control (steer on the SMOOTHED/coasted bearing sxy; hover on brief loss -> no snap) ----
         G["locked"] = lock is not None
         if lock is None:
-            cmd["mode"] = "hold"                   # position-hold at the engagement area + re-acquire
-            cmd["vx"] = cmd["vy"] = cmd["vz"] = 0.0; cmd["yaw"] = 0.0
-            G["state"] = "SEARCH" if G["search"] else "DETECT"; G["tgt_est"] = None
+            lost_t += dt; G["tgt_est"] = None
             if rf is not None: rf.reset()
-        elif lock["kind"] == "air":
-            cmd["mode"] = "vel"; G["state"] = "TRACK-AIR"
-            b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
-            ex = (cx - FW/2)/(FW/2); ey = (cy - FH/2)/(FH/2); center_err = float(math.hypot(ex, ey))
-            h_px = max(2.0, b[3] - b[1]); range_ok = False
-            if depth is not None:                       # robust range = depth + bbox-size cross-check + gate
-                if rf is None: rf = RangeFilter(fy=FY_F)
-                dep_rgb = cv2.resize(depth, (FW, FH))
-                rd = rf.robust_depth(dep_rgb, b)
-                if rd is not None: rf.calibrate(rd, h_px)             # learn target size from ONBOARD depth
-                rng, range_ok = rf.update(dep_rgb, b, h_px, dt)
-            sp = float(G["speed"])
-            cmd["yaw"] = float(np.clip(55*ex, -45, 45))
-            cmd["vz"] = float(np.clip(3*ey, -2.5, 2.5))
-            if range_ok and rng:                        # close only when range trusted (no bg surge)
-                cmd["vx"] = float(np.clip(0.8*(rng - G["gap"]), 0.0, sp))
-            else:
-                cmd["vx"] = float(np.clip(sp*(1-abs(ex)), 0.0, sp*0.6))   # creep/center while range unsure
-            cmd["vy"] = 0.0
-            if range_ok and rng and 1.0 < rng < 120.0 and ego is not None:   # VISION-ONLY target estimate
-                est = tgt_world_from_vision(ego, yaw, ex, ey, rng)
-                pe = G.get("tgt_est"); G["tgt_est"] = est if not pe else [0.6*p+0.4*e for p, e in zip(pe, est)]
-        else:  # ground
-            cmd["mode"] = "vel"
-            b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
-            ex = (cx - DW/2)/(DW/2); ey = (cy - DH/2)/(DH/2); center_err = float(math.hypot(ex, ey))
-            cmd["yaw"] = 0.0; sp = float(G["speed"])
-            cmd["vx"] = float(np.clip(-2.6*ey, -sp, sp)); cmd["vy"] = float(np.clip(2.6*ex, -sp, sp))
-            centered = abs(ex) < 0.18 and abs(ey) < 0.18
-            z = ego[2] if ego is not None else 8.0       # chaser GPS altitude (ego only)
-            if G["strike_mode"] and G["strike_armed"]:
-                G["state"] = "STRIKE"; cmd["vz"] = 3.0 if centered else 1.0
-                if z < 1.6:                              # chaser near ground over the vision-locked car
-                    G["last_hit"] = f"HIT car @ {z:.1f}m"; G["strike_armed"] = False
-            elif G["action"] == "land":
-                G["state"] = "LAND"; cmd["vz"] = 1.2 if centered else 0.4
-                if z < 1.3:
-                    G["last_hit"] = "LANDED on car"; G["action"] = "follow"
-                    cmd["vx"] = cmd["vy"] = cmd["vz"] = 0.0
-            else:
-                G["state"] = "TRACK-GROUND"; cmd["vz"] = float(np.clip(-0.8*(8.0 - z), -1.5, 1.5))
-            # NOTE: ground nav is VISION-ONLY (down-cam image servo above). No target GPS/coords used.
+            if lost_t < 3.0:                          # brief loss -> HOVER in place (no snap to corridor)
+                cmd["mode"] = "vel"; cmd["vx"] = cmd["vy"] = cmd["vz"] = cmd["yaw"] = 0.0
+            else:                                     # long loss -> return to corridor (containment)
+                cmd["mode"] = "hold"
+            G["state"] = "SEARCH" if G["search"] else "DETECT"
+        else:
+            lost_t = 0.0; cmd["mode"] = "vel"
+            ex, ey = float(sxy[0]), float(sxy[1]); center_err = float(math.hypot(ex, ey))
+            b = lock["box"]; h_px = max(2.0, b[3] - b[1]); sp = float(G["speed"])
+            if lock["kind"] == "air":
+                G["state"] = "TRACK-AIR"; range_ok = False
+                if depth is not None:                 # robust range = depth + bbox-size cross-check + gate
+                    if rf is None: rf = RangeFilter(fy=FY_F)
+                    dep_rgb = cv2.resize(depth, (FW, FH))
+                    rd = rf.robust_depth(dep_rgb, b)
+                    if rd is not None: rf.calibrate(rd, h_px)
+                    rng, range_ok = rf.update(dep_rgb, b, h_px, dt)
+                cmd["yaw"] = float(np.clip(45 * ex, -40, 40))
+                cmd["vz"] = float(np.clip(2.5 * ey, -2.0, 2.0))
+                cmd["vx"] = float(np.clip(0.7 * (rng - G["gap"]), 0.0, sp)) if (range_ok and rng) \
+                    else float(np.clip(sp * 0.5 * (1 - abs(ex)), 0.0, sp * 0.5))
+                cmd["vy"] = 0.0
+                if range_ok and rng and 1.0 < rng < 120.0 and ego is not None:   # VISION-ONLY estimate
+                    est = tgt_world_from_vision(ego, yaw, ex, ey, rng)
+                    pe = G.get("tgt_est"); G["tgt_est"] = est if not pe else [0.7*p+0.3*e for p, e in zip(pe, est)]
+            else:  # ground (down cam) -- VISION-ONLY, no target coords
+                cmd["yaw"] = 0.0
+                cmd["vx"] = float(np.clip(-2.2 * ey, -sp, sp)); cmd["vy"] = float(np.clip(2.2 * ex, -sp, sp))
+                centered = abs(ex) < 0.18 and abs(ey) < 0.18
+                z = ego[2] if ego is not None else 8.0
+                if G["strike_mode"] and G["strike_armed"]:
+                    G["state"] = "STRIKE"; cmd["vz"] = 3.0 if centered else 1.0
+                    if z < 1.6: G["last_hit"] = f"HIT car @ {z:.1f}m"; G["strike_armed"] = False
+                elif G["action"] == "land":
+                    G["state"] = "LAND"; cmd["vz"] = 1.2 if centered else 0.4
+                    if z < 1.3:
+                        G["last_hit"] = "LANDED on car"; G["action"] = "follow"; cmd["vx"]=cmd["vy"]=cmd["vz"]=0.0
+                else:
+                    G["state"] = "TRACK-GROUND"; cmd["vz"] = float(np.clip(-0.8*(9.0 - z), -1.5, 1.5))
 
         # ---- altitude governor: hold ~9 m so the chaser stays where it can see air+ground
         #      (LAND/STRIKE override to descend). Robust to takeoff overshoot. ----
-        if ego is not None and G["state"] not in ("LAND", "STRIKE", "TRACK-AIR"):
+        if ego is not None and G["state"] not in ("LAND", "STRIKE", "TRACK-AIR") and cmd["mode"] == "vel":
             cmd["vz"] = float(np.clip(-0.9 * (9.0 - ego[2]), -2.0, 2.0))   # hold ~9 m (below the ~15m air target)
+
+        # ---- accel-limit velocity + slew-limit yaw-rate -> steady, compact platform (no shaking) ----
+        if cmd["mode"] == "vel":
+            cmd["vx"] = rate_limit(prevc["vx"], cmd["vx"], 3.0 * dt)
+            cmd["vy"] = rate_limit(prevc["vy"], cmd["vy"], 3.0 * dt)
+            cmd["vz"] = rate_limit(prevc["vz"], cmd["vz"], 2.5 * dt)
+            cmd["yaw"] = rate_limit(prevc["yaw"], cmd["yaw"], 160.0 * dt)
+        prevc = {k: cmd[k] for k in ("vx", "vy", "vz", "yaw")}
 
         # ---- annotate the active view ----
         src = G["video_src"]
