@@ -87,6 +87,30 @@ def yolo_boxes(model, img, conf, imgsz, classes=None):
     return out
 
 
+def is_real(depth, x1, y1, x2, y2):
+    """Depth-based SHADOW rejection (ported from AirSim). A shadow is coplanar with a finite surface
+    AND uniform in depth -> reject. Foreground drone (pops out) or against-sky -> accept. When depth is
+    sparse/unknown -> accept (never drop a real small drone). depth is the forward depth image."""
+    if depth is None:
+        return True
+    H, W = depth.shape
+    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+    bw, bh = max(1, x2 - x1), max(1, y2 - y1)
+    inner = depth[max(0, y1 + bh // 5):y2 - bh // 5, max(0, x1 + bw // 5):x2 - bw // 5]
+    iv = inner[(inner > 0.2) & (inner < 1e4)]
+    if iv.size < 10:
+        return True
+    obj_d, obj_std = float(np.median(iv)), float(np.std(iv))
+    rx1, ry1, rx2, ry2 = max(0, x1 - bw), max(0, y1 - bh), min(W, x2 + bw), min(H, y2 + bh)
+    ring = depth[ry1:ry2, rx1:rx2].copy()
+    ring[max(0, y1 - ry1):y2 - ry1, max(0, x1 - rx1):x2 - rx1] = -1.0
+    rv = ring[(ring > 0.2) & (ring < 1e4)]
+    bg = float(np.median(rv)) if rv.size >= 10 else float("inf")
+    if not math.isfinite(bg) or bg > 200:
+        return True                                # against sky / no background -> real
+    return not (abs(bg - obj_d) < 0.8 and obj_std < 0.5)   # coplanar + flat == shadow on a surface
+
+
 def depth_color(d):
     if d is None:
         return np.zeros((DH, DW, 3), np.uint8)
@@ -144,6 +168,16 @@ def loop():
         # ---- detect (throttled + alternating so the Flask UI thread isn't GIL-starved) ----
         if front is not None and fno % 4 == 0:
             air_dets = yolo_boxes(air_model, front, 0.12, 512)
+            if depth is not None and air_dets:           # SHADOW rejection via forward depth
+                dh, dw = depth.shape; sx = dw / FW; sy = dh / FH
+                kept = []
+                for d in air_dets:
+                    b = d["box"]
+                    if is_real(depth, b[0]*sx, b[1]*sy, b[2]*sx, b[3]*sy):
+                        kept.append(d)
+                    else:
+                        G["shadows"] = G.get("shadows", 0) + 1
+                air_dets = kept
         if down is not None and fno % 4 == 2:
             gnd_dets = yolo_boxes(coco, down, 0.30, 416, classes=list(GROUND_CLS))
 
@@ -253,8 +287,8 @@ def loop():
             cv2.putText(view, f"LOCK {lock['kind']}", (x1, max(0, y1-8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         cv2.rectangle(view, (0, 0), (view.shape[1], 26), (0, 0, 0), -1)
-        cv2.putText(view, f"PX4-SITL  {G['state']}  view:{src}  {G['last_hit']}", (8, 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+        cv2.putText(view, f"PX4-SITL  {G['state']}  view:{src}  shadows_rej={G.get('shadows',0)}  {G['last_hit']}",
+                    (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         ok, jpg = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if ok: G["frame"] = jpg.tobytes()
 
@@ -279,6 +313,7 @@ def loop():
             "video_src": G["video_src"], "telem_src": G["telem_src"],
             "strike_mode": G["strike_mode"], "strike_armed": G["strike_armed"], "strike_msg": G["last_hit"],
             "lock_kind": lock["kind"] if lock else None, "n_air": len(air_dets), "n_ground": len(gnd_dets),
+            "shadows": G.get("shadows", 0),
         }
         time.sleep(0.06)        # cap loop ~10 Hz -> leaves GIL for the Flask UI threads
 
