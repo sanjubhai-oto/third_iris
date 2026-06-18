@@ -137,9 +137,9 @@ def loop():
     from pymavlink import mavutil
     air_model = YOLO(UAV_W); coco = YOLO(COCO_W)
     br = MavBridge("udpin:0.0.0.0:14540")
-    cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw": 0.0, "mode": "takeoff", "alt": 6.0}
+    cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw": 0.0, "mode": "takeoff", "alt": 9.0}
 
-    HOLD = (0.0, 10.0, -6.0)                       # local NED hold ~ world (10,0,6): BELOW target -> looks up vs sky
+    HOLD = (0.0, 10.0, -9.0)                       # local NED hold ~ world (10,0,9): BELOW the ~15m target -> looks up vs sky
     def streamer():                               # the ONLY continuous br.m writer (proven to allow offboard)
         while True:
             if cmd["mode"] == "takeoff":          # POSITION setpoint takeoff (robust, like runner_mission)
@@ -284,7 +284,7 @@ def loop():
         # ---- altitude governor: hold ~9 m so the chaser stays where it can see air+ground
         #      (LAND/STRIKE override to descend). Robust to takeoff overshoot. ----
         if ego is not None and G["state"] not in ("LAND", "STRIKE", "TRACK-AIR"):
-            cmd["vz"] = float(np.clip(-0.9 * (6.0 - ego[2]), -2.0, 2.0))   # hold ~6 m (below air target)
+            cmd["vz"] = float(np.clip(-0.9 * (9.0 - ego[2]), -2.0, 2.0))   # hold ~9 m (below the ~15m air target)
 
         # ---- annotate the active view ----
         src = G["video_src"]
