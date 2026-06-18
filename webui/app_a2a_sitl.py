@@ -59,7 +59,9 @@ G = {"running": True, "autolock": True, "search": False, "manual_mode": False,
      "speed": 5.0, "gap": 6.0, "state": "DETECT", "locked": False, "jammed": False,
      "video_src": "front", "telem_src": "airsim", "avoid": False,
      "strike_mode": False, "strike_armed": False, "last_hit": "--",
-     "action": "follow", "frame": None, "tel": {}, "sel": None, "clear": False}
+     "action": "follow", "frame": None, "tel": {}, "sel": None, "clear": False,
+     "target_type": "air",          # EXPLICIT selector: "air" (UAV) or "ground" (vehicle)
+     "maxrange": 200.0}             # engage only targets within this range (m) -> chaser stays controlled
 
 S = {"front": None, "down": None, "depth": None, "ego": None, "yaw": 0.0,
      "air": None, "ground": None, "stamp": 0.0}
@@ -129,6 +131,27 @@ def is_real(depth, x1, y1, x2, y2):
     if not math.isfinite(bg) or bg > 200:
         return True                                # against sky / no background -> real
     return not (abs(bg - obj_d) < 0.8 and obj_std < 0.5)   # coplanar + flat == shadow on a surface
+
+
+def detect_sky_dots(bgr, top_frac=0.72, min_a=4, max_a=700, dev=10):
+    """Any small, compact, distinct dot in the SKY region is a candidate UAV (real small drones at range
+    are just dots). Local-contrast (img - blur) so it catches dark OR light specks vs smooth sky."""
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    H, W = g.shape; cut = int(H * top_frac)
+    sky = g[:cut]
+    d = cv2.absdiff(sky, cv2.GaussianBlur(sky, (0, 0), 7))
+    m = cv2.morphologyEx((d > dev).astype(np.uint8) * 255, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in cnts:
+        a = cv2.contourArea(c)
+        if a < min_a or a > max_a:
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        if w < 2 or h < 2 or w > 5 * h or h > 5 * w or x <= 1 or y <= 1 or x + w >= W - 1:
+            continue
+        out.append({"box": [float(x), float(y), float(x + w), float(y + h)], "conf": 0.25, "cls": -1})
+    return out[:8]
 
 
 def depth_color(d):
@@ -207,17 +230,22 @@ def loop():
                     else:
                         G["shadows"] = G.get("shadows", 0) + 1
                 air_dets = kept
+            for dd in detect_sky_dots(front):        # "any sky dot = UAV candidate"; merge + dedup vs YOLO
+                dc = ((dd["box"][0]+dd["box"][2])/2, (dd["box"][1]+dd["box"][3])/2)
+                if not any(abs((d["box"][0]+d["box"][2])/2 - dc[0]) < 25 and
+                           abs((d["box"][1]+d["box"][3])/2 - dc[1]) < 25 for d in air_dets):
+                    air_dets.append(dd)
             air_fresh = len(air_dets) > 0
         if down is not None and fno % 4 == 2:
             gnd_dets = yolo_boxes(coco, down, 0.30, 416, classes=list(GROUND_CLS))
             gnd_fresh = len(gnd_dets) > 0
 
-        # ---- TARGET SELECTOR: the VIDEO toggle picks the target type (front/depth = UAV, down = ground)
-        active_kind = "ground" if G["video_src"] == "down" else "air"
-        if G["video_src"] != prev_video:
-            prev_video = G["video_src"]
+        # ---- TARGET SELECTOR: explicit UAV/ground choice from the webui (NOT tied to the video view) ----
+        active_kind = G["target_type"]               # "air" or "ground"
+        if active_kind != prev_video:                # selector changed -> drop a mismatched lock
+            prev_video = active_kind
             if lock is not None and lock["kind"] != active_kind:
-                lock = None; ikf.reset()             # switched target type -> drop + re-acquire the new kind
+                lock = None; ikf.reset()
         # ---- selection (click / autolock / clear) ----
         if G["clear"]:
             lock = None; ikf.reset(); G["clear"] = False; G["strike_armed"] = False
@@ -232,6 +260,8 @@ def loop():
                 lock = {"kind": active_kind, "box": d["box"]}; ikf.reset()
         elif G["autolock"] and lock is None:
             pool = air_dets if active_kind == "air" else gnd_dets
+            if active_kind == "air":                  # only lock targets within the engage envelope (maxrange)
+                pool = [d for d in pool if (FY_F * 0.55 / max(2.0, d["box"][3]-d["box"][1])) <= G["maxrange"]]
             if pool:
                 d = max(pool, key=lambda d: d["conf"]); lock = {"kind": active_kind, "box": d["box"]}; ikf.reset()
 
@@ -280,10 +310,15 @@ def loop():
                     rng, range_ok = rf.update(None, b, h_px, dt)
                 cmd["yaw"] = float(np.clip(45 * ex, -40, 40))
                 cmd["vz"] = float(np.clip(2.5 * ey, -2.0, 2.0))
-                cmd["vx"] = float(np.clip(0.7 * (rng - G["gap"]), 0.0, sp)) if (range_ok and rng) \
-                    else float(np.clip(sp * 0.5 * (1 - abs(ex)), 0.0, sp * 0.5))
+                out_env = rng is not None and rng > G["maxrange"]    # beyond engage envelope -> don't chase
+                if out_env:
+                    cmd["vx"] = 0.0; range_ok = False; G["state"] = "OUT-OF-RANGE"
+                elif range_ok and rng:
+                    cmd["vx"] = float(np.clip(0.7 * (rng - G["gap"]), 0.0, sp))
+                else:
+                    cmd["vx"] = float(np.clip(sp * 0.5 * (1 - abs(ex)), 0.0, sp * 0.5))
                 cmd["vy"] = 0.0
-                if range_ok and rng and 1.0 < rng < 120.0 and ego is not None:   # VISION-ONLY estimate
+                if range_ok and rng and 1.0 < rng <= G["maxrange"] and ego is not None:   # VISION-ONLY estimate
                     est = tgt_world_from_vision(ego, yaw, ex, ey, rng)
                     pe = G.get("tgt_est"); G["tgt_est"] = est if not pe else [0.7*p+0.3*e for p, e in zip(pe, est)]
             else:  # ground (down cam) -- VISION-ONLY, no target coords
@@ -365,7 +400,7 @@ def loop():
             "video_src": G["video_src"], "telem_src": G["telem_src"],
             "strike_mode": G["strike_mode"], "strike_armed": G["strike_armed"], "strike_msg": G["last_hit"],
             "lock_kind": lock["kind"] if lock else None, "n_air": len(air_dets), "n_ground": len(gnd_dets),
-            "shadows": G.get("shadows", 0),
+            "shadows": G.get("shadows", 0), "target_type": G["target_type"], "maxrange": G["maxrange"],
         }
         time.sleep(0.06)        # cap loop ~10 Hz -> leaves GIL for the Flask UI threads
 
@@ -422,6 +457,18 @@ def set_gap():
     return ("", 204)
 @app.route("/set_mode", methods=["POST"])
 def set_mode(): return ("", 204)
+@app.route("/set_target_type", methods=["POST"])
+def set_target_type():
+    try:
+        t = request.get_json(force=True).get("type", "air")
+        G["target_type"] = "ground" if t == "ground" else "air"
+    except Exception: pass
+    return jsonify(ok=True, target_type=G["target_type"])
+@app.route("/set_maxrange", methods=["POST"])
+def set_maxrange():
+    try: G["maxrange"] = float(request.get_json(force=True).get("maxrange", G["maxrange"]))
+    except Exception: pass
+    return jsonify(ok=True, maxrange=G["maxrange"])
 @app.route("/set_video_source", methods=["POST"])
 def set_video_source():
     try:

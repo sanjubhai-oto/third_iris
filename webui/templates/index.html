@@ -728,5 +728,46 @@
   document.getElementById("btnAbort").addEventListener("click", function () { postAction("/abort_strike"); });
 })();
 </script>
+
+<!-- ===== A2A (GZ PX4-SITL) control panel: explicit target type + view + engage range ===== -->
+<div id="a2aPanel" style="position:fixed;top:8px;right:8px;z-index:9999;background:rgba(15,20,30,.92);
+     border:1px solid #2c3a4c;border-radius:10px;padding:10px 12px;color:#cdd6e4;font:13px sans-serif;min-width:200px">
+  <div style="color:#0ff;font-weight:600;margin-bottom:6px">A2A TARGET</div>
+  <div style="margin-bottom:6px">
+    <button id="a2aUav" style="padding:5px 10px;border-radius:6px;cursor:pointer">UAV (air)</button>
+    <button id="a2aGnd" style="padding:5px 10px;border-radius:6px;cursor:pointer">Ground</button>
+  </div>
+  <div style="margin-bottom:6px">View:
+    <button class="a2aView" data-v="front" style="cursor:pointer">front</button>
+    <button class="a2aView" data-v="down" style="cursor:pointer">down</button>
+    <button class="a2aView" data-v="depth" style="cursor:pointer">depth</button>
+  </div>
+  <div>Max range: <span id="a2aMrV">200</span> m<br>
+    <input id="a2aMr" type="range" min="20" max="300" step="10" value="200" style="width:170px"></div>
+  <div id="a2aStat" style="margin-top:6px;color:#9fb0c3"></div>
+</div>
+<script>
+(function () {
+  function post(u, o) { return fetch(u, {method:"POST", headers:{"Content-Type":"application/json"},
+                                         body:JSON.stringify(o||{})}).catch(function(){}); }
+  var uav=document.getElementById("a2aUav"), gnd=document.getElementById("a2aGnd");
+  function mark(t){ uav.style.background = t==="air"?"#1f7a3f":"#222d3d"; gnd.style.background = t==="ground"?"#1f7a3f":"#222d3d"; }
+  uav.onclick=function(){ post("/set_target_type",{type:"air"}); mark("air"); };
+  gnd.onclick=function(){ post("/set_target_type",{type:"ground"}); mark("ground"); };
+  mark("air");
+  Array.prototype.forEach.call(document.querySelectorAll(".a2aView"), function(b){
+    b.onclick=function(){ post("/set_video_source",{source:b.getAttribute("data-v")}); }; });
+  var mr=document.getElementById("a2aMr"), mrv=document.getElementById("a2aMrV");
+  mr.oninput=function(){ mrv.textContent=mr.value; };
+  mr.onchange=function(){ post("/set_maxrange",{maxrange:parseFloat(mr.value)}); };
+  setInterval(function(){
+    fetch("/telemetry",{cache:"no-store"}).then(function(r){return r.json();}).then(function(t){
+      document.getElementById("a2aStat").textContent =
+        (t.state||"")+" | tgt:"+(t.target_type||"?")+" | dets a"+(t.n_air==null?"-":t.n_air)+"/g"+(t.n_ground==null?"-":t.n_ground)+
+        (t.range_m?(" | "+t.range_m+"m"):"");
+    }).catch(function(){});
+  }, 500);
+})();
+</script>
 </body>
 </html>
