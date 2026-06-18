@@ -21,11 +21,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(REPO, "deploy"))
 sys.path.insert(0, os.path.join(REPO, "sim", "gz", "a2a"))
+sys.path.insert(0, os.path.join(REPO, "sim", "airsim"))
 from gz.transport13 import Node
 from gz.msgs10.image_pb2 import Image
 from gz.msgs10.pose_v_pb2 import Pose_V
 from mavlink_control import MavBridge
 from px4_util import arm_offboard
+from range_filter import RangeFilter        # robust range: depth + bbox-size cross-check + gating
 from ultralytics import YOLO
 
 UAV_W = os.environ.get("UAV_MODEL", os.path.join(REPO, "runs/train/uav_diverse/weights/best.pt"))
@@ -36,6 +38,7 @@ DW, DH = 512, 384
 PORT = int(os.environ.get("A2A_SITL_PORT", "5063"))
 HFOV_F = 68.75                                  # forward cam HFOV (deg) = 1.20 rad
 VFOV_F = math.degrees(2 * math.atan(math.tan(math.radians(HFOV_F) / 2) * FH / FW))
+FY_F = (FW / 2.0) / math.tan(math.radians(HFOV_F) / 2.0)   # focal in px (RGB coords) for size-range
 
 
 def tgt_world_from_vision(ego, yaw, ex, ey, rng):
@@ -134,9 +137,9 @@ def loop():
     from pymavlink import mavutil
     air_model = YOLO(UAV_W); coco = YOLO(COCO_W)
     br = MavBridge("udpin:0.0.0.0:14540")
-    cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw": 0.0, "mode": "takeoff", "alt": 8.0}
+    cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw": 0.0, "mode": "takeoff", "alt": 6.0}
 
-    HOLD = (0.0, 10.0, -9.0)                       # local NED hold point ~ world (10,0,9): engagement area
+    HOLD = (0.0, 10.0, -6.0)                       # local NED hold ~ world (10,0,6): BELOW target -> looks up vs sky
     def streamer():                               # the ONLY continuous br.m writer (proven to allow offboard)
         while True:
             if cmd["mode"] == "takeoff":          # POSITION setpoint takeoff (robust, like runner_mission)
@@ -160,7 +163,7 @@ def loop():
     time.sleep(1.0)
     arm_and_climb()
 
-    lock = None; lock_miss = 0      # {"kind":"air"|"ground", "box":..} in its source image
+    lock = None; lock_miss = 0; rf = None      # {"kind":"air"|"ground", "box":..} + robust range filter
     fno = 0; last = time.time(); last_armchk = time.time()
     air_dets = []; gnd_dets = []
     while G["running"]:
@@ -234,20 +237,27 @@ def loop():
             cmd["mode"] = "hold"                   # position-hold at the engagement area + re-acquire
             cmd["vx"] = cmd["vy"] = cmd["vz"] = 0.0; cmd["yaw"] = 0.0
             G["state"] = "SEARCH" if G["search"] else "DETECT"; G["tgt_est"] = None
+            if rf is not None: rf.reset()
         elif lock["kind"] == "air":
             cmd["mode"] = "vel"; G["state"] = "TRACK-AIR"
             b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
             ex = (cx - FW/2)/(FW/2); ey = (cy - FH/2)/(FH/2); center_err = float(math.hypot(ex, ey))
-            if depth is not None:                       # range from forward depth at bbox center
-                du, dv = int(cx/FW*depth.shape[1]), int(cy/FH*depth.shape[0])
-                roi = depth[max(0,dv-3):dv+3, max(0,du-3):du+3]; roi = roi[(roi > 0.3) & (roi < 250)]
-                rng = float(np.median(roi)) if roi.size else None
+            h_px = max(2.0, b[3] - b[1]); range_ok = False
+            if depth is not None:                       # robust range = depth + bbox-size cross-check + gate
+                if rf is None: rf = RangeFilter(fy=FY_F)
+                dep_rgb = cv2.resize(depth, (FW, FH))
+                rd = rf.robust_depth(dep_rgb, b)
+                if rd is not None: rf.calibrate(rd, h_px)             # learn target size from ONBOARD depth
+                rng, range_ok = rf.update(dep_rgb, b, h_px, dt)
             sp = float(G["speed"])
             cmd["yaw"] = float(np.clip(55*ex, -45, 45))
             cmd["vz"] = float(np.clip(3*ey, -2.5, 2.5))
-            close = (rng - G["gap"]) if rng else (sp*(1-abs(ex)))
-            cmd["vx"] = float(np.clip(0.8*close if rng else sp*(1-abs(ex)), 0.0, sp)); cmd["vy"] = 0.0
-            if rng is not None and 1.0 < rng < 80.0 and ego is not None:   # VISION-ONLY target estimate
+            if range_ok and rng:                        # close only when range trusted (no bg surge)
+                cmd["vx"] = float(np.clip(0.8*(rng - G["gap"]), 0.0, sp))
+            else:
+                cmd["vx"] = float(np.clip(sp*(1-abs(ex)), 0.0, sp*0.6))   # creep/center while range unsure
+            cmd["vy"] = 0.0
+            if range_ok and rng and 1.0 < rng < 120.0 and ego is not None:   # VISION-ONLY target estimate
                 est = tgt_world_from_vision(ego, yaw, ex, ey, rng)
                 pe = G.get("tgt_est"); G["tgt_est"] = est if not pe else [0.6*p+0.4*e for p, e in zip(pe, est)]
         else:  # ground
@@ -273,8 +283,8 @@ def loop():
 
         # ---- altitude governor: hold ~9 m so the chaser stays where it can see air+ground
         #      (LAND/STRIKE override to descend). Robust to takeoff overshoot. ----
-        if ego is not None and G["state"] not in ("LAND", "STRIKE"):
-            cmd["vz"] = float(np.clip(-0.9 * (9.0 - ego[2]), -2.0, 2.0))
+        if ego is not None and G["state"] not in ("LAND", "STRIKE", "TRACK-AIR"):
+            cmd["vz"] = float(np.clip(-0.9 * (6.0 - ego[2]), -2.0, 2.0))   # hold ~6 m (below air target)
 
         # ---- annotate the active view ----
         src = G["video_src"]
