@@ -34,10 +34,12 @@ from ultralytics import YOLO
 UAV_W = os.environ.get("UAV_MODEL", os.path.join(REPO, "runs/train/uav_diverse/weights/best.pt"))
 COCO_W = os.environ.get("COCO_MODEL", "yolov8n.pt")          # auto-downloads; car/truck/person
 GROUND_CLS = {0: "person", 2: "car", 5: "bus", 7: "truck"}
-FW, FH = 640, 360
+FW, FH = 640, 480                               # x500_mono_cam 1280x960 (4:3) downscaled for processing
+CHASER = "x500_mono_cam_0"; AIR = "x500_mono_cam_1"        # chaser + air target (both standard x500_mono_cam)
+FRONT_TOPIC = "/world/uav_a2a/model/x500_mono_cam_0/link/camera_link/sensor/camera/image"
 DW, DH = 512, 384
 PORT = int(os.environ.get("A2A_SITL_PORT", "5063"))
-HFOV_F = 68.75                                  # forward cam HFOV (deg) = 1.20 rad
+HFOV_F = 99.7                                   # x500_mono_cam front HFOV (deg) = 1.74 rad
 VFOV_F = math.degrees(2 * math.atan(math.tan(math.radians(HFOV_F) / 2) * FH / FW))
 FY_F = (FW / 2.0) / math.tan(math.radians(HFOV_F) / 2.0)   # focal in px (RGB coords) for size-range
 
@@ -67,7 +69,9 @@ S = {"front": None, "down": None, "depth": None, "ego": None, "yaw": 0.0,
 def gz_subs(world):
     def on_front(m):
         a = np.frombuffer(m.data, np.uint8).reshape(m.height, m.width, 3)
-        S["front"] = cv2.cvtColor(a, cv2.COLOR_RGB2BGR); S["stamp"] = time.time()
+        bgr = cv2.cvtColor(a, cv2.COLOR_RGB2BGR)
+        S["front"] = cv2.resize(bgr, (FW, FH)) if (m.width != FW or m.height != FH) else bgr
+        S["stamp"] = time.time()
     def on_down(m):
         a = np.frombuffer(m.data, np.uint8).reshape(m.height, m.width, 3)
         S["down"] = cv2.cvtColor(a, cv2.COLOR_RGB2BGR)
@@ -76,15 +80,15 @@ def gz_subs(world):
         d[~np.isfinite(d)] = 0.0; S["depth"] = d
     def on_pose(m):
         for p in m.pose:
-            if p.name == "jetray_chaser_0":
+            if p.name == CHASER:
                 S["ego"] = np.array([p.position.x, p.position.y, p.position.z]); q = p.orientation
                 S["yaw"] = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
-            elif p.name == "jetray_runner_1":
+            elif p.name == AIR:
                 S["air"] = np.array([p.position.x, p.position.y, p.position.z])
             elif p.name == "rover":
                 S["ground"] = np.array([p.position.x, p.position.y, p.position.z])
     nodes = [Node(), Node(), Node(), Node()]
-    nodes[0].subscribe(Image, "/chaser/camera_front", on_front)
+    nodes[0].subscribe(Image, FRONT_TOPIC, on_front)
     nodes[1].subscribe(Image, "/chaser/camera_down", on_down)
     nodes[2].subscribe(Image, "/chaser/depth_front", on_depth)
     nodes[3].subscribe(Pose_V, f"/world/{world}/pose/info", on_pose)
@@ -187,6 +191,12 @@ def loop():
         air_fresh = gnd_fresh = False
         if front is not None and fno % 4 == 0:
             air_dets = yolo_boxes(air_model, front, 0.12, 512)
+            # reject the chaser's OWN prop-arms (big dark shapes at the frame EDGES) + ground blobs:
+            # keep only central, not-too-large detections (the real distant drone is small + central).
+            air_dets = [d for d in air_dets
+                        if 0.16*FW < (d["box"][0]+d["box"][2])/2 < 0.84*FW
+                        and (d["box"][1]+d["box"][3])/2 < 0.84*FH
+                        and (d["box"][2]-d["box"][0])*(d["box"][3]-d["box"][1]) < 0.10*FW*FH]
             if depth is not None and air_dets:           # SHADOW rejection via forward depth
                 dh, dw = depth.shape; sx = dw / FW; sy = dh / FH
                 kept = []
@@ -259,12 +269,15 @@ def loop():
             b = lock["box"]; h_px = max(2.0, b[3] - b[1]); sp = float(G["speed"])
             if lock["kind"] == "air":
                 G["state"] = "TRACK-AIR"; range_ok = False
-                if depth is not None:                 # robust range = depth + bbox-size cross-check + gate
-                    if rf is None: rf = RangeFilter(fy=FY_F)
+                if rf is None:
+                    rf = RangeFilter(fy=FY_F); rf.H = 0.55   # known target size (x500 ~0.55m): monocular range
+                if depth is not None:                 # depth available -> depth + size cross-check
                     dep_rgb = cv2.resize(depth, (FW, FH))
                     rd = rf.robust_depth(dep_rgb, b)
                     if rd is not None: rf.calibrate(rd, h_px)
                     rng, range_ok = rf.update(dep_rgb, b, h_px, dt)
+                else:                                 # no depth cam (x500_mono_cam) -> bbox-size range
+                    rng, range_ok = rf.update(None, b, h_px, dt)
                 cmd["yaw"] = float(np.clip(45 * ex, -40, 40))
                 cmd["vz"] = float(np.clip(2.5 * ey, -2.0, 2.0))
                 cmd["vx"] = float(np.clip(0.7 * (rng - G["gap"]), 0.0, sp)) if (range_ok and rng) \
