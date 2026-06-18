@@ -1,0 +1,325 @@
+#!/usr/bin/env python3
+"""Air + GROUND tracking on PX4-SITL (Gazebo), driven from the SAME AirSim webui (templates/index.html):
+live video (forward / down / DEPTH, switchable), click-to-select ANY detection (manual) or autolock,
+3-D map, and follow/land/strike on a ground vehicle (UAVros suv).
+
+Detection is OBJECT detection (YOLO), not colour:
+  - AIR  : our UAV detector on /chaser/camera_front  (locks the flying target drone)
+  - GROUND: COCO YOLO on /chaser/camera_down         (locks car/truck/person, e.g. the suv)
+Guidance: MAVLink offboard body-velocity (deploy/mavlink_control.py). HIT/land on true range (gz pose).
+
+Run (world up via launch_a2a.sh, runner + rover_mover flying):
+  .venv\\Scripts\\python.exe webui\\app_a2a_sitl.py        # open http://localhost:5063
+  (WSL alt: python3 webui/app_a2a_sitl.py)
+"""
+import os, sys, math, time, threading, json
+os.environ.setdefault("GZ_IP", "127.0.0.1")
+import numpy as np, cv2
+from flask import Flask, render_template, Response, request, jsonify
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "deploy"))
+sys.path.insert(0, os.path.join(REPO, "sim", "gz", "a2a"))
+from gz.transport13 import Node
+from gz.msgs10.image_pb2 import Image
+from gz.msgs10.pose_v_pb2 import Pose_V
+from mavlink_control import MavBridge
+from px4_util import arm_offboard
+from ultralytics import YOLO
+
+UAV_W = os.environ.get("UAV_MODEL", os.path.join(REPO, "runs/train/uav_diverse/weights/best.pt"))
+COCO_W = os.environ.get("COCO_MODEL", "yolov8n.pt")          # auto-downloads; car/truck/person
+GROUND_CLS = {0: "person", 2: "car", 5: "bus", 7: "truck"}
+FW, FH = 640, 360
+DW, DH = 512, 384
+PORT = int(os.environ.get("A2A_SITL_PORT", "5063"))
+
+app = Flask(__name__, template_folder=os.path.join(HERE, "templates"))
+
+G = {"running": True, "autolock": True, "search": False, "manual_mode": False,
+     "speed": 5.0, "gap": 6.0, "state": "DETECT", "locked": False, "jammed": False,
+     "video_src": "front", "telem_src": "airsim", "avoid": False,
+     "strike_mode": False, "strike_armed": False, "last_hit": "--",
+     "action": "follow", "frame": None, "tel": {}, "sel": None, "clear": False}
+
+S = {"front": None, "down": None, "depth": None, "ego": None, "yaw": 0.0,
+     "air": None, "ground": None, "stamp": 0.0}
+
+
+# ---------- gz subscriptions (keep node refs) ----------
+def gz_subs(world):
+    def on_front(m):
+        a = np.frombuffer(m.data, np.uint8).reshape(m.height, m.width, 3)
+        S["front"] = cv2.cvtColor(a, cv2.COLOR_RGB2BGR); S["stamp"] = time.time()
+    def on_down(m):
+        a = np.frombuffer(m.data, np.uint8).reshape(m.height, m.width, 3)
+        S["down"] = cv2.cvtColor(a, cv2.COLOR_RGB2BGR)
+    def on_depth(m):
+        d = np.frombuffer(m.data, np.float32).reshape(m.height, m.width).copy()
+        d[~np.isfinite(d)] = 0.0; S["depth"] = d
+    def on_pose(m):
+        for p in m.pose:
+            if p.name == "jetray_chaser_0":
+                S["ego"] = np.array([p.position.x, p.position.y, p.position.z]); q = p.orientation
+                S["yaw"] = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
+            elif p.name == "jetray_runner_1":
+                S["air"] = np.array([p.position.x, p.position.y, p.position.z])
+            elif p.name == "rover":
+                S["ground"] = np.array([p.position.x, p.position.y, p.position.z])
+    nodes = [Node(), Node(), Node(), Node()]
+    nodes[0].subscribe(Image, "/chaser/camera_front", on_front)
+    nodes[1].subscribe(Image, "/chaser/camera_down", on_down)
+    nodes[2].subscribe(Image, "/chaser/depth_front", on_depth)
+    nodes[3].subscribe(Pose_V, f"/world/{world}/pose/info", on_pose)
+    return nodes
+
+
+def yolo_boxes(model, img, conf, imgsz, classes=None):
+    r = model.predict(img, imgsz=imgsz, conf=conf, classes=classes, verbose=False)[0]
+    out = []
+    b = r.boxes
+    if b is not None:
+        for i in range(len(b)):
+            x1, y1, x2, y2 = b.xyxy[i].cpu().numpy().tolist()
+            out.append({"box": [x1, y1, x2, y2], "conf": float(b.conf[i]),
+                        "cls": int(b.cls[i]) if b.cls is not None else -1})
+    return out
+
+
+def depth_color(d):
+    if d is None:
+        return np.zeros((DH, DW, 3), np.uint8)
+    v = np.clip(d, 0, 60) / 60.0
+    return cv2.applyColorMap((v * 255).astype(np.uint8), cv2.COLORMAP_JET)
+
+
+def loop():
+    air_model = YOLO(UAV_W); coco = YOLO(COCO_W)
+    br = MavBridge("udpin:0.0.0.0:14540")
+    cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw": 0.0}
+    def streamer():
+        while True:
+            br.send_body_velocity_xy(cmd["vx"], cmd["vy"], cmd["vz"], cmd["yaw"]); time.sleep(0.05)
+    threading.Thread(target=streamer, daemon=True).start()
+    time.sleep(1.0); arm_offboard(br.m, timeout=60.0, label="chaser")
+    cmd["vz"] = -2.0; t0 = time.time()
+    while time.time() - t0 < 7 and (S["ego"] is None or S["ego"][2] < 7.5): time.sleep(0.1)
+    cmd["vz"] = 0.0
+
+    lock = None      # {"kind":"air"|"ground", "box":..,"cx","cy"} in its source image
+    fno = 0; last = time.time()
+    air_dets = []; gnd_dets = []
+    while G["running"]:
+        if S["stamp"] == 0.0:
+            time.sleep(0.02); continue
+        fno += 1; now = time.time(); dt = max(0.02, now - last); last = now
+        front, down, depth = S["front"], S["down"], S["depth"]
+        ego, yaw, air, gnd = S["ego"], S["yaw"], S["air"], S["ground"]
+
+        # ---- detect (throttled + alternating so the Flask UI thread isn't GIL-starved) ----
+        if front is not None and fno % 4 == 0:
+            air_dets = yolo_boxes(air_model, front, 0.12, 512)
+        if down is not None and fno % 4 == 2:
+            gnd_dets = yolo_boxes(coco, down, 0.30, 416, classes=list(GROUND_CLS))
+
+        # ---- selection (click / autolock / clear) ----
+        if G["clear"]:
+            lock = None; G["clear"] = False; G["strike_armed"] = False
+        sel = G.pop("sel", None) if "sel" in G else None
+        if sel is not None:
+            sx, sy = sel
+            src = G["video_src"]
+            pool = gnd_dets if src == "down" else air_dets
+            kind = "ground" if src == "down" else "air"
+            iw, ih = (DW, DH) if src == "down" else (FW, FH)
+            if pool:
+                px, py = sx * iw, sy * ih
+                d = min(pool, key=lambda d: (np.mean([d["box"][0], d["box"][2]]) - px) ** 2 +
+                                            (np.mean([d["box"][1], d["box"][3]]) - py) ** 2)
+                lock = {"kind": kind, "box": d["box"]}
+        elif G["autolock"] and lock is None:
+            if air_dets:
+                d = max(air_dets, key=lambda d: d["conf"]); lock = {"kind": "air", "box": d["box"]}
+            elif gnd_dets:
+                d = max(gnd_dets, key=lambda d: d["conf"]); lock = {"kind": "ground", "box": d["box"]}
+
+        # ---- refresh lock box from nearest current detection of same kind ----
+        rng = None; center_err = None
+        if lock is not None:
+            pool = air_dets if lock["kind"] == "air" else gnd_dets
+            if pool:
+                lb = lock["box"]; lc = ((lb[0]+lb[2])/2, (lb[1]+lb[3])/2)
+                d = min(pool, key=lambda d: ((d["box"][0]+d["box"][2])/2-lc[0])**2 +
+                                            ((d["box"][1]+d["box"][3])/2-lc[1])**2)
+                lock["box"] = d["box"]
+
+        # ---- control ----
+        G["locked"] = lock is not None
+        if lock is None:
+            cmd["vx"] = cmd["vy"] = cmd["vz"] = 0.0; cmd["yaw"] = 0.0
+            G["state"] = "SEARCH" if G["search"] else "DETECT"
+        elif lock["kind"] == "air":
+            G["state"] = "TRACK-AIR"
+            b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
+            ex = (cx - FW/2)/(FW/2); ey = (cy - FH/2)/(FH/2); center_err = float(math.hypot(ex, ey))
+            if depth is not None:                       # range from forward depth at bbox center
+                du, dv = int(cx/FW*depth.shape[1]), int(cy/FH*depth.shape[0])
+                roi = depth[max(0,dv-3):dv+3, max(0,du-3):du+3]; roi = roi[(roi > 0.3) & (roi < 250)]
+                rng = float(np.median(roi)) if roi.size else None
+            sp = float(G["speed"])
+            cmd["yaw"] = float(np.clip(55*ex, -45, 45))
+            cmd["vz"] = float(np.clip(3*ey, -2.5, 2.5))
+            close = (rng - G["gap"]) if rng else (sp*(1-abs(ex)))
+            cmd["vx"] = float(np.clip(0.8*close if rng else sp*(1-abs(ex)), 0.0, sp)); cmd["vy"] = 0.0
+        else:  # ground
+            b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
+            ex = (cx - DW/2)/(DW/2); ey = (cy - DH/2)/(DH/2); center_err = float(math.hypot(ex, ey))
+            cmd["yaw"] = 0.0; sp = float(G["speed"])
+            cmd["vx"] = float(np.clip(-2.6*ey, -sp, sp)); cmd["vy"] = float(np.clip(2.6*ex, -sp, sp))
+            centered = abs(ex) < 0.18 and abs(ey) < 0.18
+            z = ego[2] if ego is not None else 8.0
+            gz_ = gnd[2] if gnd is not None else 0.0
+            if G["strike_mode"] and G["strike_armed"]:
+                G["state"] = "STRIKE"; cmd["vz"] = 3.0 if centered else 1.0
+                if (z - gz_) < 1.2:
+                    G["last_hit"] = f"HIT car @ {z-gz_:.1f}m"; G["strike_armed"] = False
+            elif G["action"] == "land":
+                G["state"] = "LAND"; cmd["vz"] = 1.2 if centered else 0.4
+                if z < 1.3:
+                    G["last_hit"] = "LANDED on car"; G["action"] = "follow"
+                    cmd["vx"] = cmd["vy"] = cmd["vz"] = 0.0
+            else:
+                G["state"] = "TRACK-GROUND"; cmd["vz"] = float(np.clip(-0.8*(8.0 - z), -1.5, 1.5))
+            if gnd is not None and (not gnd_dets):       # rover not under down cam -> GPS approach
+                dx, dy = float(gnd[0]-ego[0]), float(gnd[1]-ego[1])
+                bx = dx*math.cos(yaw)+dy*math.sin(yaw); by = -dx*math.sin(yaw)+dy*math.cos(yaw)
+                cmd["vx"] = float(np.clip(0.7*bx, -sp, sp)); cmd["vy"] = float(np.clip(0.7*by, -sp, sp))
+
+        # ---- annotate the active view ----
+        src = G["video_src"]
+        if src == "down":
+            view = down.copy() if down is not None else np.zeros((DH, DW, 3), np.uint8)
+            for d in gnd_dets:
+                x1, y1, x2, y2 = [int(v) for v in d["box"]]
+                cv2.rectangle(view, (x1, y1), (x2, y2), (0, 180, 255), 2)
+                cv2.putText(view, GROUND_CLS.get(d["cls"], "obj"), (x1, y1-5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1)
+        elif src == "depth":
+            view = depth_color(depth); view = cv2.resize(view, (DW, DH))
+        else:
+            view = front.copy() if front is not None else np.zeros((FH, FW, 3), np.uint8)
+            for d in air_dets:
+                x1, y1, x2, y2 = [int(v) for v in d["box"]]
+                cv2.rectangle(view, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        if lock is not None and ((src == "down") == (lock["kind"] == "ground")):
+            x1, y1, x2, y2 = [int(v) for v in lock["box"]]
+            cv2.rectangle(view, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.putText(view, f"LOCK {lock['kind']}", (x1, max(0, y1-8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.rectangle(view, (0, 0), (view.shape[1], 26), (0, 0, 0), -1)
+        cv2.putText(view, f"PX4-SITL  {G['state']}  view:{src}  {G['last_hit']}", (8, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+        ok, jpg = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok: G["frame"] = jpg.tobytes()
+
+        # ---- telemetry (index.html contract + 3D map) ----
+        tgt = air if (lock and lock["kind"] == "air") else (gnd if lock else None)
+        targets = []
+        for k, d in enumerate(air_dets):
+            targets.append({"id": k, "conf": round(d["conf"], 2),
+                            "cx": ((d["box"][0]+d["box"][2])/2)/FW, "cy": ((d["box"][1]+d["box"][3])/2)/FH})
+        G["tel"] = {
+            "state": G["state"], "locked": G["locked"], "nav_source": "VIO" if G["jammed"] else "GPS",
+            "autolock": G["autolock"], "search": G["search"], "manual_mode": G["manual_mode"],
+            "jammed": G["jammed"], "avoiding": G["avoid"], "fps": round(1.0/dt, 1),
+            "range_m": round(rng, 1) if rng else None, "gap": G["gap"], "speed": G["speed"],
+            "center_err": round(center_err, 2) if center_err is not None else None,
+            "alt_m": round(float(ego[2]), 1) if ego is not None else None,
+            "ego_n": float(ego[0]) if ego is not None else 0, "ego_e": float(ego[1]) if ego is not None else 0,
+            "ego_d": -float(ego[2]) if ego is not None else 0,
+            "tgt_n": float(tgt[0]) if tgt is not None else 0, "tgt_e": float(tgt[1]) if tgt is not None else 0,
+            "tgt_d": -float(tgt[2]) if tgt is not None else 0,
+            "n_detections": len(air_dets)+len(gnd_dets), "targets": targets[:12],
+            "video_src": G["video_src"], "telem_src": G["telem_src"],
+            "strike_mode": G["strike_mode"], "strike_armed": G["strike_armed"], "strike_msg": G["last_hit"],
+            "lock_kind": lock["kind"] if lock else None, "n_air": len(air_dets), "n_ground": len(gnd_dets),
+        }
+        time.sleep(0.06)        # cap loop ~10 Hz -> leaves GIL for the Flask UI threads
+
+
+# ---------- routes (index.html contract) ----------
+@app.route("/")
+def index(): return render_template("index.html")
+
+@app.route("/video_feed")
+def video_feed():
+    def gen():
+        while True:
+            f = G["frame"]
+            if f: yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + f + b"\r\n")
+            time.sleep(0.05)
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+@app.route("/telemetry")
+def telemetry(): return jsonify(G["tel"])
+
+def _on(req):
+    try: return bool(req.get_json(force=True).get("on", False))
+    except Exception: return False
+
+@app.route("/select", methods=["POST"])
+def select():
+    try:
+        j = request.get_json(force=True); G["sel"] = (float(j["x"]), float(j["y"]))
+    except Exception: pass
+    return ("", 204)
+@app.route("/strike_select", methods=["POST"])
+def strike_select(): return select()
+@app.route("/clear", methods=["POST"])
+def clear(): G["clear"] = True; return ("", 204)
+@app.route("/set_autolock", methods=["POST"])
+def set_autolock(): G["autolock"] = _on(request); return ("", 204)
+@app.route("/set_search", methods=["POST"])
+def set_search(): G["search"] = _on(request); return ("", 204)
+@app.route("/set_manual", methods=["POST"])
+def set_manual(): G["manual_mode"] = _on(request); return ("", 204)
+@app.route("/set_jam", methods=["POST"])
+def set_jam(): G["jammed"] = _on(request); return ("", 204)
+@app.route("/set_avoid", methods=["POST"])
+def set_avoid(): G["avoid"] = _on(request); return ("", 204)
+@app.route("/set_speed", methods=["POST"])
+def set_speed():
+    try: G["speed"] = float(request.get_json(force=True).get("speed", G["speed"]))
+    except Exception: pass
+    return ("", 204)
+@app.route("/set_gap", methods=["POST"])
+def set_gap():
+    try: G["gap"] = float(request.get_json(force=True).get("gap", G["gap"]))
+    except Exception: pass
+    return ("", 204)
+@app.route("/set_mode", methods=["POST"])
+def set_mode(): return ("", 204)
+@app.route("/set_video_source", methods=["POST"])
+def set_video_source():
+    try:
+        v = request.get_json(force=True).get("source", "front")
+        G["video_src"] = v if v in ("front", "down", "depth") else "front"
+    except Exception: pass
+    return ("", 204)
+@app.route("/set_telem_source", methods=["POST"])
+def set_telem_source(): return ("", 204)
+@app.route("/set_strike_mode", methods=["POST"])
+def set_strike_mode(): G["strike_mode"] = _on(request); return ("", 204)
+@app.route("/strike", methods=["POST"])
+def strike(): G["strike_mode"] = True; G["strike_armed"] = True; return jsonify(ok=True)
+@app.route("/abort_strike", methods=["POST"])
+def abort_strike(): G["strike_armed"] = False; return jsonify(ok=True)
+@app.route("/land", methods=["POST"])
+def land(): G["action"] = "land"; return jsonify(ok=True)
+
+if __name__ == "__main__":
+    NODES = gz_subs(os.environ.get("A2A_WORLD", "uav_a2a"))   # keep refs alive (GC kills subs)
+    threading.Thread(target=loop, daemon=True).start()
+    print(f"[app_a2a_sitl] open http://localhost:{PORT}", flush=True)
+    app.run(host="0.0.0.0", port=PORT, threaded=True)

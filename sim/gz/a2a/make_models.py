@@ -47,6 +47,34 @@ FWD_CAM = """      <!-- FORWARD tracking camera (air-to-air). Mounted WELL forwa
       </sensor>
 """
 
+DOWN_CAM = """      <!-- DOWNWARD camera (UAVros-style) for tracking a GROUND vehicle / precision landing. -->
+      <sensor name="camera_down" type="camera">
+        <gz_frame_id>base_link</gz_frame_id>
+        <pose>0 0 -0.05 0 1.5707963 0</pose>
+        <topic>chaser/camera_down</topic>
+        <camera>
+          <horizontal_fov>1.50</horizontal_fov>
+          <image><width>512</width><height>384</height></image>
+          <clip><near>0.05</near><far>500</far></clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>12</update_rate>
+      </sensor>
+      <!-- FORWARD DEPTH camera (range + the webui depth view, like AirSim DepthPlanar). -->
+      <sensor name="depth_front" type="depth_camera">
+        <gz_frame_id>base_link</gz_frame_id>
+        <pose>0.35 0 0.15 0 -0.17 0</pose>
+        <topic>chaser/depth_front</topic>
+        <camera>
+          <horizontal_fov>1.20</horizontal_fov>
+          <image><width>320</width><height>180</height></image>
+          <clip><near>0.1</near><far>300</far></clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>10</update_rate>
+      </sensor>
+"""
+
 # the contiguous down-VIO camera region in the base jetray model.sdf (RGB + depth, with its comment)
 VIO_BLOCK = re.compile(r'[ \t]*<!-- DOWN-facing VIO camera.*?camera_vio_depth.*?</sensor>\n', re.S)
 
@@ -71,8 +99,8 @@ def main():
     models = os.path.join(px4, "Tools/simulation/gz/models")
     base = open(os.path.join(models, "jetray", "model.sdf")).read()
     print(f"PX4_DIR={px4}\nmodels={models}")
-    write_model(models, "jetray_chaser", build(base, "jetray_chaser", FWD_CAM),
-                "jetray chaser: forward tracking camera /chaser/camera_front (air-to-air)")
+    write_model(models, "jetray_chaser", build(base, "jetray_chaser", FWD_CAM + DOWN_CAM),
+                "jetray chaser: forward cam /chaser/camera_front (air) + down cam /chaser/camera_down (ground)")
     write_model(models, "jetray_runner", build(base, "jetray_runner", ""),
                 "jetray runner: no cameras (flight target)")
     print("OK: jetray_chaser + jetray_runner generated.")

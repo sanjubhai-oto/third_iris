@@ -56,6 +56,20 @@ class MavBridge:
             0, 0, 0,                              # ax,ay,az (ignored)
             0.0, math.radians(float(yaw_rate_deg)))   # yaw (ignored), yaw_rate (rad/s)
 
+    def send_body_velocity_xy(self, vx: float, vy: float, vz: float, yaw_rate_deg: float):
+        """Full body-frame velocity (vx fwd, vy right, vz down) + yaw-rate. Used for down-camera
+        ground tracking where lateral (vy) motion is needed, not just forward."""
+        mav = self.m.mav
+        IGNORE_POS = 0b0000000000000111
+        IGNORE_ACC = 0b0000000111000000
+        IGNORE_YAW = 0b0000010000000000
+        type_mask = IGNORE_POS | IGNORE_ACC | IGNORE_YAW
+        mav.set_position_target_local_ned_send(
+            0, self.m.target_system, self.m.target_component,
+            self.mavutil.mavlink.MAV_FRAME_BODY_NED, type_mask,
+            0, 0, 0, float(vx), float(vy), float(vz), 0, 0, 0,
+            0.0, math.radians(float(yaw_rate_deg)))
+
     def hover(self):
         self.send_body_velocity(0.0, 0.0, 0.0)
 

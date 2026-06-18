@@ -53,5 +53,13 @@
         </visual>
       </link>
     </model>
+
+    <!-- GROUND TARGET (UGV): UAVros SUV mesh (real car) -> detected as an OBJECT (YOLO/COCO "car")
+         from the chaser's down camera, not by colour. Pose-driven kinematically by rover_mover.py. -->
+    <include>
+      <uri>model://suv</uri>
+      <name>rover</name>
+      <pose>10 -6 0 0 0 0</pose>
+    </include>
   </world>
 </sdf>

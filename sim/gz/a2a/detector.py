@@ -33,6 +33,23 @@ def detect_blob(frame_bgr):
     return dict(cx=x + w / 2.0, cy=y + h / 2.0, w=float(w), h=float(h), conf=0.5, method="BLOB")
 
 
+def detect_ground_color(frame_bgr, min_area=60):
+    """UAVros-style color detection of the RED ground rover (down camera). -> dict(cx,cy,w,h,conf,method)
+    or None. Robust red mask (two HSV hue bands), largest blob."""
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    m1 = cv2.inRange(hsv, (0, 110, 70), (10, 255, 255))
+    m2 = cv2.inRange(hsv, (170, 110, 70), (180, 255, 255))
+    mask = cv2.morphologyEx(m1 | m2, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    c = max(cnts, key=cv2.contourArea)
+    if cv2.contourArea(c) < min_area:
+        return None
+    x, y, w, h = cv2.boundingRect(c)
+    return dict(cx=x + w / 2.0, cy=y + h / 2.0, w=float(w), h=float(h), conf=0.9, method="GROUND")
+
+
 class HybridDetector:
     def __init__(self, weights=DEFAULT_WEIGHTS, every=8, conf=0.20, imgsz=640):
         self.every, self.conf, self.imgsz = every, conf, imgsz

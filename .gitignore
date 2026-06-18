@@ -59,3 +59,7 @@ Thumbs.db
 outputs/
 linkedin_assets/
 runs/videos_body_servo/
+
+external/
+yolov8n.pt
+runs/videos/a2a_frames/
