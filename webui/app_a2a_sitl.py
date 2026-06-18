@@ -34,6 +34,18 @@ GROUND_CLS = {0: "person", 2: "car", 5: "bus", 7: "truck"}
 FW, FH = 640, 360
 DW, DH = 512, 384
 PORT = int(os.environ.get("A2A_SITL_PORT", "5063"))
+HFOV_F = 68.75                                  # forward cam HFOV (deg) = 1.20 rad
+VFOV_F = math.degrees(2 * math.atan(math.tan(math.radians(HFOV_F) / 2) * FH / FW))
+
+
+def tgt_world_from_vision(ego, yaw, ex, ey, rng):
+    """REAL-WORLD estimator: target world pos from CHASER GPS pose (ego,yaw) + camera bearing (ex,ey)
+    + vision range. NO target coordinates used -> this is how it works on a real drone (chaser GPS only)."""
+    thx = ex * math.tan(math.radians(HFOV_F) / 2.0); thy = ey * math.tan(math.radians(VFOV_F) / 2.0)
+    fwd, right, down = rng, rng * thx, rng * thy
+    fx, fy = math.cos(yaw), math.sin(yaw)        # world forward (chaser heading)
+    rx, ry = math.sin(yaw), -math.cos(yaw)       # world right
+    return [ego[0] + fwd * fx + right * rx, ego[1] + fwd * fy + right * ry, ego[2] - down]
 
 app = Flask(__name__, template_folder=os.path.join(HERE, "templates"))
 
@@ -221,7 +233,7 @@ def loop():
         if lock is None:
             cmd["mode"] = "hold"                   # position-hold at the engagement area + re-acquire
             cmd["vx"] = cmd["vy"] = cmd["vz"] = 0.0; cmd["yaw"] = 0.0
-            G["state"] = "SEARCH" if G["search"] else "DETECT"
+            G["state"] = "SEARCH" if G["search"] else "DETECT"; G["tgt_est"] = None
         elif lock["kind"] == "air":
             cmd["mode"] = "vel"; G["state"] = "TRACK-AIR"
             b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
@@ -235,6 +247,9 @@ def loop():
             cmd["vz"] = float(np.clip(3*ey, -2.5, 2.5))
             close = (rng - G["gap"]) if rng else (sp*(1-abs(ex)))
             cmd["vx"] = float(np.clip(0.8*close if rng else sp*(1-abs(ex)), 0.0, sp)); cmd["vy"] = 0.0
+            if rng is not None and 1.0 < rng < 80.0 and ego is not None:   # VISION-ONLY target estimate
+                est = tgt_world_from_vision(ego, yaw, ex, ey, rng)
+                pe = G.get("tgt_est"); G["tgt_est"] = est if not pe else [0.6*p+0.4*e for p, e in zip(pe, est)]
         else:  # ground
             cmd["mode"] = "vel"
             b = lock["box"]; cx = (b[0]+b[2])/2; cy = (b[1]+b[3])/2
@@ -242,12 +257,11 @@ def loop():
             cmd["yaw"] = 0.0; sp = float(G["speed"])
             cmd["vx"] = float(np.clip(-2.6*ey, -sp, sp)); cmd["vy"] = float(np.clip(2.6*ex, -sp, sp))
             centered = abs(ex) < 0.18 and abs(ey) < 0.18
-            z = ego[2] if ego is not None else 8.0
-            gz_ = gnd[2] if gnd is not None else 0.0
+            z = ego[2] if ego is not None else 8.0       # chaser GPS altitude (ego only)
             if G["strike_mode"] and G["strike_armed"]:
                 G["state"] = "STRIKE"; cmd["vz"] = 3.0 if centered else 1.0
-                if (z - gz_) < 1.2:
-                    G["last_hit"] = f"HIT car @ {z-gz_:.1f}m"; G["strike_armed"] = False
+                if z < 1.6:                              # chaser near ground over the vision-locked car
+                    G["last_hit"] = f"HIT car @ {z:.1f}m"; G["strike_armed"] = False
             elif G["action"] == "land":
                 G["state"] = "LAND"; cmd["vz"] = 1.2 if centered else 0.4
                 if z < 1.3:
@@ -255,10 +269,7 @@ def loop():
                     cmd["vx"] = cmd["vy"] = cmd["vz"] = 0.0
             else:
                 G["state"] = "TRACK-GROUND"; cmd["vz"] = float(np.clip(-0.8*(8.0 - z), -1.5, 1.5))
-            if gnd is not None and (not gnd_dets):       # rover not under down cam -> GPS approach
-                dx, dy = float(gnd[0]-ego[0]), float(gnd[1]-ego[1])
-                bx = dx*math.cos(yaw)+dy*math.sin(yaw); by = -dx*math.sin(yaw)+dy*math.cos(yaw)
-                cmd["vx"] = float(np.clip(0.7*bx, -sp, sp)); cmd["vy"] = float(np.clip(0.7*by, -sp, sp))
+            # NOTE: ground nav is VISION-ONLY (down-cam image servo above). No target GPS/coords used.
 
         # ---- altitude governor: hold ~9 m so the chaser stays where it can see air+ground
         #      (LAND/STRIKE override to descend). Robust to takeoff overshoot. ----
@@ -293,7 +304,10 @@ def loop():
         if ok: G["frame"] = jpg.tobytes()
 
         # ---- telemetry (index.html contract + 3D map) ----
-        tgt = air if (lock and lock["kind"] == "air") else (gnd if lock else None)
+        te = G.get("tgt_est")                     # VISION estimate (chaser GPS + camera) -> shown on map
+        truth = air if (lock and lock["kind"] == "air") else (gnd if lock else None)
+        vis_err = (round(float(np.linalg.norm(np.array(te) - truth)), 1)
+                   if (te is not None and truth is not None) else None)   # honesty: vision vs truth
         targets = []
         for k, d in enumerate(air_dets):
             targets.append({"id": k, "conf": round(d["conf"], 2),
@@ -307,8 +321,8 @@ def loop():
             "alt_m": round(float(ego[2]), 1) if ego is not None else None,
             "ego_n": float(ego[0]) if ego is not None else 0, "ego_e": float(ego[1]) if ego is not None else 0,
             "ego_d": -float(ego[2]) if ego is not None else 0,
-            "tgt_n": float(tgt[0]) if tgt is not None else 0, "tgt_e": float(tgt[1]) if tgt is not None else 0,
-            "tgt_d": -float(tgt[2]) if tgt is not None else 0,
+            "tgt_n": float(te[0]) if te else 0, "tgt_e": float(te[1]) if te else 0,
+            "tgt_d": -float(te[2]) if te else 0, "vis_err": vis_err, "nav": "VISION-ONLY (chaser GPS)",
             "n_detections": len(air_dets)+len(gnd_dets), "targets": targets[:12],
             "video_src": G["video_src"], "telem_src": G["telem_src"],
             "strike_mode": G["strike_mode"], "strike_armed": G["strike_armed"], "strike_msg": G["last_hit"],
